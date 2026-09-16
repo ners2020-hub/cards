@@ -19,10 +19,10 @@ async function call(body) {
   return data;
 }
 function Multiplayer() {
-  const { user, loading, signInWithEmailAndPassword, signUpWithEmailAndPassword, signOut } = useAuth();
+  const { user, loading, signInWithEmailAndPassword, signUpWithEmailAndPassword, signInWithGoogle, signOut } = useAuth();
   const [email, setEmail] = useState(''), [password, setPassword] = useState('');
   const [element, setElement] = useState('fire'), [controller, setController] = useState('Draco Alec');
-  const [invite, setInvite] = useState(() => new URLSearchParams(location.hash.slice(1)).get('invite') || '');
+  const [invite, setInvite] = useState(() => new URLSearchParams(location.hash.slice(1)).get('invite') || sessionStorage.getItem('fatebound.oauthInvite') || '');
   const [share, setShare] = useState(''), [room, setRoom] = useState(null), [matches, setMatches] = useState([]);
   const [busy, setBusy] = useState(false), [notice, setNotice] = useState(''), [connected, setConnected] = useState(false);
   const [opponentOnline, setOpponentOnline] = useState(false), [report, setReport] = useState(''), [reportOpen, setReportOpen] = useState(false);
@@ -59,7 +59,9 @@ function Multiplayer() {
   }, [room?.id, user?.id, refresh]);
   useEffect(() => {
     if (!user) return;
-    const id = new URLSearchParams(location.search).get('match');
+    const id = new URLSearchParams(location.search).get('match') || sessionStorage.getItem('fatebound.oauthMatch');
+    sessionStorage.removeItem('fatebound.oauthInvite');
+    sessionStorage.removeItem('fatebound.oauthMatch');
     if (id) { currentId.current = id; refresh().catch(e => { currentId.current = null; setNotice(e.message); }); }
   }, [user?.id, refresh]);
   async function run(fn) {
@@ -67,6 +69,11 @@ function Multiplayer() {
     lock.current = true; setBusy(true); setNotice('');
     try { await fn(); } catch (e) { if (e.current) accept(e.current); if (e.current || e.definitive) pending.current = null; setNotice(e.message); }
     finally { lock.current = false; setBusy(false); }
+  }
+  async function googleSignIn() {
+    sessionStorage.setItem('fatebound.oauthInvite', invite);
+    sessionStorage.setItem('fatebound.oauthMatch', new URLSearchParams(location.search).get('match') || '');
+    await signInWithGoogle();
   }
   function open(next) {
     currentId.current = next.id; pending.current = null; setRoom(next);
@@ -81,7 +88,7 @@ function Multiplayer() {
     });
   }
   if (loading) return <main className="mp-shell">Opening your account…</main>;
-  if (!user) return <main className="mp-shell"><a href="/">← Solo arena</a><h1>Invite a rival.</h1><p>Sign in to create a private duel or use a friend’s invite.</p><form onSubmit={e => { e.preventDefault(); void run(() => signInWithEmailAndPassword(email, password)); }}><label>Email<input type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} /></label><label>Password<input type="password" autoComplete="current-password" minLength={8} required value={password} onChange={e => setPassword(e.target.value)} /></label><button disabled={busy}>Sign in</button><button type="button" disabled={busy || !email || password.length < 8} onClick={() => run(async () => { const result = await signUpWithEmailAndPassword(email, password); if (!result.session) setNotice('Check your email to confirm your account, then return here to sign in.'); })}>Create account</button></form><p role="status">{notice}</p></main>;
+  if (!user) return <main className="mp-shell"><a href="/">← Solo arena</a><h1>Invite a rival.</h1><p>Sign in to create a private duel or use a friend’s invite.</p><form onSubmit={e => { e.preventDefault(); void run(() => signInWithEmailAndPassword(email, password)); }}><label>Email<input type="email" autoComplete="email" required value={email} onChange={e => setEmail(e.target.value)} /></label><label>Password<input type="password" autoComplete="current-password" minLength={8} required value={password} onChange={e => setPassword(e.target.value)} /></label><button disabled={busy}>Sign in</button><button type="button" disabled={busy || !email || password.length < 8} onClick={() => run(async () => { const result = await signUpWithEmailAndPassword(email, password); if (!result.session) setNotice('Check your email to confirm your account, then return here to sign in.'); })}>Create account</button></form><button type="button" disabled={busy} onClick={() => run(googleSignIn)}>Continue with Google</button><p role="status">{notice}</p></main>;
   const mine = room?.seat === 'playerState' ? room?.hostDeck : room?.guestDeck;
   const theirs = room?.seat === 'playerState' ? room?.guestDeck : room?.hostDeck;
   return <>

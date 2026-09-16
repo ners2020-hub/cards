@@ -75,7 +75,7 @@ export function AuthProvider({ children }) {
       async signInWithGoogle() {
         const { data, error } = await supabase.auth.signInWithOAuth({
           provider: "google",
-          options: { redirectTo: window.location.origin },
+          options: { redirectTo: `${window.location.origin}/multiplayer` },
         });
 
         if (error) {
