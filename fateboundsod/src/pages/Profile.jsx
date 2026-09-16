@@ -1,425 +1,589 @@
-import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Trophy, Target, Swords, Heart, Flame, Wind, Edit2, Save, X, Sparkles, Zap } from 'lucide-react';
-import { motion } from 'framer-motion';
-import { createPageUrl } from '../utils';
-import { Link } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useNavigate, Link } from "react-router-dom";
+import { motion } from "framer-motion";
+import { Trophy, Target, Swords, Edit2, Save, X, LogOut, Sparkles, Layers } from "lucide-react";
 
-export default function Profile() {
-  const [user, setUser] = useState(null);
-  const [editing, setEditing] = useState(false);
-  const [newUsername, setNewUsername] = useState('');
-  const [error, setError] = useState('');
-  const [adminMode, setAdminMode] = useState(false);
-  const [tokenAmount, setTokenAmount] = useState(100);
-  const queryClient = useQueryClient();
+import { useAuth } from "@/lib/AuthContext";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 
-useEffect(() => {
-  if (import.meta.env.DEV) {
-    setCurrentUser({ email: 'dev@local.test' });
-    return;
+import { userService } from "@/services/userService";
+import { fetchPlayerDecks } from "@/services/deckService";
+import { createPageUrl } from "@/utils";
+
+const LEVEL_THRESHOLDS = [
+  { level: 1, xp: 0, rank: "Fatebound Initiate" },
+  { level: 2, xp: 100, rank: "Fatebound Initiate" },
+  { level: 3, xp: 250, rank: "Fatebound Initiate" },
+  { level: 4, xp: 500, rank: "Fatebound Initiate" },
+  { level: 5, xp: 800, rank: "Shard Seeker" },
+  { level: 10, xp: 2000, rank: "Shard Seeker" },
+  { level: 15, xp: 4000, rank: "Destiny Weaver" },
+  { level: 20, xp: 7000, rank: "Fate Champion" },
+  { level: 25, xp: 12000, rank: "Legend of Dominion" },
+];
+
+function getRankFromLevel(level) {
+  const lvl = Number(level || 1);
+  const match = [...LEVEL_THRESHOLDS].reverse().find((t) => lvl >= t.level);
+  return match?.rank || "Fatebound Initiate";
+}
+
+function getXpWindow(xp) {
+  const totalXp = Number(xp || 0);
+  const sorted = [...LEVEL_THRESHOLDS].sort((a, b) => a.xp - b.xp);
+
+  let current = sorted[0];
+  let next = null;
+
+  for (let i = 0; i < sorted.length; i++) {
+    if (totalXp >= sorted[i].xp) current = sorted[i];
+    if (totalXp < sorted[i].xp) {
+      next = sorted[i];
+      break;
+    }
   }
 
-  base44.auth.me()
-    .then(user => setCurrentUser(user))
-    .catch(() => {});
-}, []);
+  if (!next) {
+    return {
+      currentXpMin: current.xp,
+      nextXp: current.xp,
+      pct: 100,
+      label: "Max Rank",
+    };
+  }
 
+  const span = Math.max(1, next.xp - current.xp);
+  const within = Math.min(span, Math.max(0, totalXp - current.xp));
+  const pct = Math.max(0, Math.min(100, (within / span) * 100));
 
+  return {
+    currentXpMin: current.xp,
+    nextXp: next.xp,
+    pct,
+    label: `${totalXp} / ${next.xp} XP`,
+  };
+}
 
-  const { data: profile, isLoading } = useQuery({
-    queryKey: ['user-profile', user?.email],
+function elementMeta(element) {
+  const key = String(element || "").toLowerCase();
+  const map = {
+    fire: { emoji: "🔥", label: "Fire" },
+    water: { emoji: "💧", label: "Water" },
+    earth: { emoji: "🌿", label: "Earth" },
+    wind: { emoji: "💨", label: "Wind" },
+    blood: { emoji: "🩸", label: "Blood" },
+    light: { emoji: "☀️", label: "Light" },
+    shadow: { emoji: "🌑", label: "Shadow" },
+    electric: { emoji: "⚡", label: "Electric" },
+    cryo: { emoji: "❄️", label: "Cryo" },
+  };
+  return map[key] || { emoji: "🎴", label: element || "Unknown" };
+}
+
+export default function Profile() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const { user, loading: authLoading } = useAuth();
+
+  const [editing, setEditing] = useState(false);
+  const [newUsername, setNewUsername] = useState("");
+  const [error, setError] = useState("");
+
+  // ✅ Redirect in effect ONLY (never during render)
+  useEffect(() => {
+    if (!authLoading && !user) {
+      navigate("/login", { replace: true });
+    }
+  }, [authLoading, user, navigate]);
+
+  // ✅ Query always declared (hooks must be stable)
+  const { data, isLoading } = useQuery({
+    queryKey: ["profile-context", user?.email],
+    enabled: !!user?.email && !authLoading,
     queryFn: async () => {
-      const profiles = await base44.entities.UserProfile.filter({ user_email: user.email });
-      if (profiles.length > 0) return profiles[0];
-      
-      // Create default profile
-      return await base44.entities.UserProfile.create({
+      const profile = await userService.ensureUserProfileExists(user);
+      const progress = await userService.ensurePlayerProgressExists(user.email);
+      const decks = await fetchPlayerDecks(user.email);
+      return { profile, progress, decks };
+    },
+  });
+
+  // ✅ Safe defaults so memos can always run
+  const profile = data?.profile ?? null;
+  const progress = data?.progress ?? null;
+  const decks = data?.decks ?? [];
+
+  const isAdmin = useMemo(() => (profile?.role || "").toLowerCase() === "admin", [profile?.role]);
+
+  const adminMode = useMemo(() => {
+    return Boolean(profile?.admin_mode_active ?? progress?.admin_mode_active ?? false);
+  }, [profile?.admin_mode_active, progress?.admin_mode_active]);
+
+  // ✅ These useMemos MUST NOT be after a conditional return
+  const elementBreakdown = useMemo(() => {
+    const list = Array.isArray(decks) ? decks : [];
+    const counts = new Map();
+
+    for (const d of list) {
+      const k = String(d?.element || "unknown").toLowerCase();
+      counts.set(k, (counts.get(k) || 0) + 1);
+    }
+
+    const total = Math.max(1, list.length);
+    return Array.from(counts.entries())
+      .map(([k, count]) => ({
+        key: k,
+        count,
+        pct: Math.round((count / total) * 100),
+        ...elementMeta(k),
+      }))
+      .sort((a, b) => b.count - a.count);
+  }, [decks]);
+
+  const deckUsage = useMemo(() => {
+    const list = Array.isArray(decks) ? decks : [];
+    const winsMap = progress?.deck_wins && typeof progress.deck_wins === "object" ? progress.deck_wins : {};
+
+    return list
+      .map((d) => {
+        const idKey = d?.id ? String(d.id) : "";
+        const nameKey = d?.name ? String(d.name) : "";
+        const wins = Number(winsMap?.[idKey] ?? winsMap?.[nameKey] ?? 0);
+
+        return {
+          id: d?.id,
+          name: d?.name || "Untitled Deck",
+          element: d?.element || "unknown",
+          total_cards: d?.total_cards ?? 0,
+          updated_date: d?.updated_date,
+          wins,
+        };
+      })
+      .sort((a, b) => b.wins - a.wins);
+  }, [decks, progress?.deck_wins]);
+
+  const updateUsernameMutation = useMutation({
+    mutationFn: async (username) => {
+      if (!user?.email) throw new Error("Not signed in");
+      if (!profile?.user_email) throw new Error("Profile not initialized");
+
+      const trimmed = String(username || "").trim();
+      if (!trimmed) throw new Error("Username cannot be empty");
+
+      await userService.upsertUserProfile({
         user_email: user.email,
-        username: user.full_name || user.email.split('@')[0],
-        wins: 0,
-        losses: 0,
-        games_played: 0,
-        deck_usage: { blood: 0, fire: 0, wind: 0, light: 0, shadow: 0, electric: 0, cryo: 0, earth: 0, water: 0 },
-        card_stats: {}
+        username: trimmed,
+        updated_date: new Date().toISOString(),
       });
     },
-    enabled: !!user
-  });
-
-  const { data: progress } = useQuery({
-    queryKey: ['player-progress', user?.email],
-    queryFn: async () => {
-      const progs = await base44.entities.PlayerProgress.filter({ user_email: user.email });
-      return progs.length > 0 ? progs[0] : null;
-    },
-    enabled: !!user
-  });
-
-  const updateProfileMutation = useMutation({
-    mutationFn: (data) => base44.entities.UserProfile.update(profile.id, data),
     onSuccess: () => {
-      queryClient.invalidateQueries(['user-profile']);
+      queryClient.invalidateQueries({ queryKey: ["profile-context", user?.email] });
       setEditing(false);
-      setError('');
-    }
+      setError("");
+    },
+    onError: (err) => setError(err?.message || "Failed to update username"),
   });
 
   const toggleAdminModeMutation = useMutation({
-    mutationFn: async (enable) => {
-      if (!progress) return;
-      
-      if (enable) {
-        // Enable admin mode: unlock all decks and all cards
-        const allCards = await base44.entities.Card.list();
-        const allCardIds = allCards.map(card => ({ card_id: card.id, quantity: 3 }));
-        
-        await base44.entities.PlayerProgress.update(progress.id, {
-          unlocked_decks: ['blood', 'fire', 'wind', 'light', 'shadow', 'electric', 'cryo', 'earth', 'water'],
-          owned_cards: allCardIds,
-          admin_mode_active: true
-        });
-      } else {
-        // Disable admin mode: reset account
-        await base44.entities.PlayerProgress.update(progress.id, {
-          tokens: 100,
-          unlocked_decks: ['fire', 'water', 'earth', 'wind'],
+    mutationFn: async (enabled) => {
+      if (!user?.email) throw new Error("Not signed in");
+      if (!profile?.user_email) throw new Error("Profile not initialized");
+
+      const email = user.email;
+
+      if (!enabled) {
+        await userService.updatePlayerProgressByEmail(email, {
+          tokens: 1000,
+          unlocked_decks: [],
           owned_cards: [],
           total_wins: 0,
           ai_wins: 0,
           pvp_wins: 0,
-          admin_mode_active: false
+          deck_wins: {},
+          xp: 0,
+          level: 1,
+          fate_rank: "Unranked",
+          admin_mode_active: false,
         });
-        
-        // Reset profile stats
-        await base44.entities.UserProfile.update(profile.id, {
-          wins: 0,
-          losses: 0,
-          games_played: 0,
-          deck_usage: { blood: 0, fire: 0, wind: 0, light: 0, shadow: 0, electric: 0, cryo: 0, earth: 0, water: 0 }
+      } else {
+        await userService.updatePlayerProgressByEmail(email, {
+          admin_mode_active: true,
         });
       }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries(['player-progress']);
-      queryClient.invalidateQueries(['user-profile']);
-    }
-  });
 
-  const addTokensMutation = useMutation({
-    mutationFn: async (amount) => {
-      if (!progress || !adminMode) return;
-      await base44.entities.PlayerProgress.update(progress.id, {
-        tokens: progress.tokens + amount
+      await userService.upsertUserProfile({
+        user_email: email,
+        admin_mode_active: Boolean(enabled),
+        updated_date: new Date().toISOString(),
       });
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries(['player-progress']);
-    }
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["profile-context", user?.email] }),
+    onError: (err) => setError(err?.message || "Failed to toggle admin mode"),
   });
 
-  const handleSaveUsername = () => {
-    if (!newUsername.trim()) {
-      setError('Username cannot be empty');
-      return;
-    }
+  const signOutMutation = useMutation({
+    mutationFn: async () => {
+      await userService.signOut();
+    },
+    onSuccess: () => {
+      queryClient.clear();
+      navigate("/login", { replace: true });
+    },
+    onError: () => {
+      navigate("/login", { replace: true });
+    },
+  });
 
-    // Basic offensive word filter
-    const offensive = ['fuck', 'shit', 'ass', 'damn', 'bitch', 'crap'];
-    if (offensive.some(word => newUsername.toLowerCase().includes(word))) {
-      setError('Username contains inappropriate language');
-      return;
-    }
-
-    if (newUsername.length < 3 || newUsername.length > 20) {
-      setError('Username must be 3-20 characters');
-      return;
-    }
-
-    updateProfileMutation.mutate({ username: newUsername });
-  };
-
-  const deckIcons = {
-    blood: { icon: Heart, color: 'text-red-500' },
-    fire: { icon: Flame, color: 'text-orange-500' },
-    wind: { icon: Wind, color: 'text-cyan-500' },
-    light: { icon: Flame, color: 'text-yellow-400' },
-    shadow: { icon: Heart, color: 'text-purple-500' },
-    electric: { icon: Zap, color: 'text-yellow-300' },
-    cryo: { icon: Wind, color: 'text-blue-400' },
-    earth: { icon: Heart, color: 'text-green-500' },
-    water: { icon: Wind, color: 'text-blue-500' }
-  };
-
-  useEffect(() => {
-    if (progress?.admin_mode_active) {
-      setAdminMode(true);
-    }
-  }, [progress]);
-
-  if (!user || isLoading) {
+  // ✅ NOW we can do conditional rendering (after hooks)
+  if (authLoading || !user || isLoading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950 flex items-center justify-center">
-        <div className="text-white text-xl">Loading profile...</div>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <div className="text-white text-xl">Loading profile…</div>
       </div>
     );
   }
 
-  const winRate = profile?.games_played > 0 
-    ? ((profile.wins / profile.games_played) * 100).toFixed(1) 
-    : 0;
+  const totalWins = Number(progress?.total_wins ?? 0);
+  const aiWins = Number(progress?.ai_wins ?? 0);
+  const pvpWins = Number(progress?.pvp_wins ?? 0);
 
-  const mostUsedDeck = profile?.deck_usage 
-    ? Object.entries(profile.deck_usage).sort((a, b) => b[1] - a[1])[0]?.[0] 
-    : 'blood';
+  const gamesPlayed = Number(profile?.games_played ?? (aiWins + pvpWins));
+  const losses = Math.max(0, gamesPlayed - totalWins);
+  const winRate = gamesPlayed > 0 ? ((totalWins / gamesPlayed) * 100).toFixed(1) : "0.0";
+
+  const level = Number(progress?.level ?? 1);
+  const xp = Number(progress?.xp ?? 0);
+  const fateRank = progress?.fate_rank || getRankFromLevel(level);
+  const xpWindow = getXpWindow(xp);
+
+  const decksCount = Array.isArray(decks) ? decks.length : 0;
+
+  const handleSaveUsername = () => {
+    const trimmed = newUsername.trim();
+    if (!trimmed) {
+      setError("Username cannot be empty");
+      return;
+    }
+    updateUsernameMutation.mutate(trimmed);
+  };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950 p-4 md:p-8">
-      <div className="max-w-5xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8">
-          <Link to={createPageUrl('TCG')}>
-            <Button variant="outline" className="border-slate-700">
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-purple-950 to-slate-950 p-6">
+      <div className="max-w-6xl mx-auto">
+        <div className="flex items-center justify-between mb-6">
+          <Link to="/">
+            <Button variant="outline">
               <X className="w-4 h-4 mr-2" />
-              Back to Game
+              Back
             </Button>
           </Link>
+
+          <Button
+            onClick={() => signOutMutation.mutate()}
+            className="bg-red-600 hover:bg-red-700"
+            disabled={signOutMutation.isPending}
+          >
+            <LogOut className="w-4 h-4 mr-2" />
+            Sign Out
+          </Button>
         </div>
 
-        {/* Profile Card */}
+        {/* Header */}
         <motion.div
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 18 }}
           animate={{ opacity: 1, y: 0 }}
-          className="bg-slate-900/80 backdrop-blur rounded-2xl border-2 border-purple-500 p-8 mb-6"
+          className="bg-slate-900/80 rounded-2xl border border-purple-500 p-8 mb-6"
         >
-          <div className="flex items-start justify-between mb-6">
-            <div className="flex items-center gap-4">
-              <div className="w-20 h-20 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 flex items-center justify-center text-3xl font-bold text-white">
-                {profile?.username?.[0]?.toUpperCase() || 'U'}
-              </div>
-              <div>
-                {editing ? (
-                  <div className="space-y-2">
-                    <Input
-                      value={newUsername}
-                      onChange={(e) => setNewUsername(e.target.value)}
-                      placeholder="Enter username"
-                      className="bg-slate-800 border-slate-700 text-white"
-                      maxLength={20}
-                    />
-                    {error && <p className="text-red-400 text-sm">{error}</p>}
-                    <div className="flex gap-2">
-                      <Button onClick={handleSaveUsername} size="sm" className="bg-green-600">
-                        <Save className="w-3 h-3 mr-1" />
-                        Save
-                      </Button>
-                      <Button onClick={() => { setEditing(false); setError(''); }} size="sm" variant="outline">
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <h1 className="text-3xl font-bold text-white">{profile?.username}</h1>
+          <div className="flex items-center gap-4 mb-6">
+            <div className="w-16 h-16 rounded-full bg-gradient-to-r from-purple-600 to-pink-600 flex items-center justify-center text-2xl font-bold text-white">
+              {(profile?.username || user.email)?.[0]?.toUpperCase() || "U"}
+            </div>
+
+            <div className="flex-1">
+              {editing ? (
+                <>
+                  <Input value={newUsername} onChange={(e) => setNewUsername(e.target.value)} className="mb-2" />
+                  {error && <p className="text-red-400 text-sm">{error}</p>}
+                  <div className="flex gap-2">
+                    <Button size="sm" onClick={handleSaveUsername} disabled={updateUsernameMutation.isPending}>
+                      <Save className="w-3 h-3 mr-1" />
+                      Save
+                    </Button>
                     <Button
+                      size="sm"
+                      variant="outline"
                       onClick={() => {
-                        setEditing(true);
-                        setNewUsername(profile?.username || '');
+                        setEditing(false);
+                        setError("");
                       }}
-                      size="icon"
-                      variant="ghost"
-                      className="text-slate-400 hover:text-white"
                     >
-                      <Edit2 className="w-4 h-4" />
+                      Cancel
                     </Button>
                   </div>
-                )}
-                <p className="text-slate-400">{user.email}</p>
-              </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <h1 className="text-3xl font-bold text-white">{profile?.username || user.email}</h1>
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    onClick={() => {
+                      setEditing(true);
+                      setNewUsername(profile?.username || "");
+                    }}
+                  >
+                    <Edit2 className="w-4 h-4" />
+                  </Button>
+                </div>
+              )}
+
+              <p className="text-slate-400">{user.email}</p>
+              <p className="text-xs text-slate-500 mt-1">
+                Level {level} • XP {xp} • Tokens {progress?.tokens ?? 0}
+              </p>
+
+              {error && !editing && <p className="text-red-400 text-sm mt-2">{error}</p>}
             </div>
           </div>
 
-          {/* Stats Grid */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Card className="bg-slate-800/50 border-slate-700">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-slate-400 flex items-center gap-2">
-                  <Swords className="w-4 h-4" />
-                  Games Played
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold text-white">{profile?.games_played || 0}</p>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-slate-800/50 border-slate-700">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-slate-400 flex items-center gap-2">
-                  <Trophy className="w-4 h-4 text-yellow-500" />
-                  Wins
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold text-green-400">{profile?.wins || 0}</p>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-slate-800/50 border-slate-700">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-slate-400 flex items-center gap-2">
-                  <Target className="w-4 h-4 text-red-500" />
-                  Losses
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold text-red-400">{profile?.losses || 0}</p>
-              </CardContent>
-            </Card>
-
-            <Card className="bg-slate-800/50 border-slate-700">
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm text-slate-400">Win Rate</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-3xl font-bold text-purple-400">{winRate}%</p>
-              </CardContent>
-            </Card>
+            <Stat label="Games" value={gamesPlayed} icon={Swords} />
+            <Stat label="Wins" value={totalWins} icon={Trophy} color="text-green-400" />
+            <Stat label="Losses" value={losses} icon={Target} color="text-red-400" />
+            <Stat label="Win Rate" value={`${winRate}%`} />
           </div>
         </motion.div>
 
-        {/* Deck Usage */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-        >
-          <Card className="bg-slate-900/80 backdrop-blur border-2 border-purple-500">
-            <CardHeader>
-              <CardTitle className="text-white">Deck Usage</CardTitle>
+        {/* Rank + XP */}
+        <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="mb-6">
+          <Card className="bg-slate-900/70 border-purple-500/60">
+            <CardHeader className="pb-3">
+              <CardTitle className="text-white flex items-center gap-2">
+                <Sparkles className="w-5 h-5" />
+                Fate Rank
+              </CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {(() => {
-                  const allDecks = { blood: 0, fire: 0, wind: 0, light: 0, shadow: 0, electric: 0, cryo: 0, earth: 0, water: 0 };
-                  const deckUsage = { ...allDecks, ...(profile?.deck_usage || {}) };
-                  const total = Object.values(deckUsage).reduce((a, b) => a + b, 0);
-                  
-                  return Object.entries(deckUsage).map(([deck, count]) => {
-                  const DeckIcon = deckIcons[deck]?.icon || Heart;
-                  const percentage = total > 0 ? (count / total) * 100 : 0;
+            <CardContent className="space-y-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-2xl font-bold text-white">{fateRank}</p>
+                  <p className="text-sm text-slate-400">Level {level}</p>
+                </div>
 
-                  return (
-                    <div key={deck} className="space-y-2">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <DeckIcon className={`w-5 h-5 ${deckIcons[deck]?.color}`} />
-                          <span className="text-white capitalize font-semibold">{deck} Deck</span>
-                        </div>
-                        <span className="text-slate-400">{count} games ({percentage.toFixed(0)}%)</span>
-                      </div>
-                      <div className="h-2 bg-slate-800 rounded-full overflow-hidden">
-                        <motion.div
-                         initial={{ width: 0 }}
-                         animate={{ width: `${percentage}%` }}
-                         transition={{ duration: 0.5, delay: 0.2 }}
-                         className={`h-full bg-gradient-to-r ${
-                           deck === 'blood' ? 'from-red-600 to-rose-800' :
-                           deck === 'fire' ? 'from-orange-600 to-red-600' :
-                           deck === 'water' ? 'from-blue-600 to-cyan-600' :
-                           deck === 'earth' ? 'from-green-600 to-emerald-700' :
-                           deck === 'wind' ? 'from-teal-600 to-cyan-600' :
-                           deck === 'light' ? 'from-amber-400 to-yellow-600' :
-                           deck === 'shadow' ? 'from-purple-900 to-indigo-950' :
-                           deck === 'electric' ? 'from-yellow-500 to-amber-600' :
-                           deck === 'cryo' ? 'from-cyan-400 to-blue-500' :
-                           'from-cyan-600 to-blue-600'
-                         }`}
-                        />
-                      </div>
-                    </div>
-                  );
-                });
-                })()}
+                <div className="text-right">
+                  <p className="text-sm text-slate-300">{xpWindow.label}</p>
+                  {xpWindow.label !== "Max Rank" && (
+                    <p className="text-xs text-slate-500">Next milestone: {xpWindow.nextXp} XP</p>
+                  )}
+                </div>
               </div>
+
+              <Progress value={xpWindow.pct} />
+              <p className="text-xs text-slate-500">
+                Earn XP by playing matches, completing quests, and progressing through Dominion.
+              </p>
             </CardContent>
           </Card>
         </motion.div>
 
-        {/* Admin Mode - Only for Admin Users */}
-        {user?.role === 'admin' && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-            className="mt-6"
-          >
-            <Card className={`bg-slate-900/80 backdrop-blur border-2 ${adminMode ? 'border-red-500' : 'border-slate-700'}`}>
-              <CardHeader>
+        {/* Deck Panels */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Elemental Deck Usage */}
+          <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }}>
+            <Card className="bg-slate-900/70 border-slate-700">
+              <CardHeader className="pb-3">
                 <CardTitle className="text-white flex items-center gap-2">
-                  <span className="text-2xl">🛠️</span>
-                  Admin Testing Mode
+                  <Layers className="w-5 h-5" />
+                  Elemental Deck Usage
                 </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between p-4 bg-slate-800/50 rounded-lg">
-                  <div>
-                    <p className="text-white font-bold">Admin Mode {adminMode ? 'Active' : 'Inactive'}</p>
-                    <p className="text-slate-400 text-sm">
-                      {adminMode ? 'All cards unlocked, all decks available' : 'Enable to unlock everything'}
+
+              <CardContent className="space-y-3">
+                {decksCount === 0 ? (
+                  <div className="rounded-xl border border-slate-700 bg-slate-950/40 p-4">
+                    <p className="text-slate-200 font-semibold">No decks yet</p>
+                    <p className="text-sm text-slate-400 mt-1">
+                      Create your first deck to start tracking elemental usage.
                     </p>
-                  </div>
-                  <Button
-                    onClick={() => {
-                      const enable = !adminMode;
-                      setAdminMode(enable);
-                      toggleAdminModeMutation.mutate(enable);
-                    }}
-                    className={adminMode ? 'bg-red-600 hover:bg-red-700' : 'bg-green-600 hover:bg-green-700'}
-                  >
-                    {adminMode ? 'Deactivate & Reset' : 'Activate'}
-                  </Button>
-                </div>
 
-                {adminMode && (
-                  <div className="p-4 bg-slate-800/50 rounded-lg space-y-3">
-                    <p className="text-white font-bold">Add Tokens</p>
-                    <div className="flex gap-3">
-                      <Input
-                        type="number"
-                        value={tokenAmount}
-                        onChange={(e) => setTokenAmount(parseInt(e.target.value) || 0)}
-                        className="bg-slate-900 border-slate-700 text-white"
-                        placeholder="Amount"
-                      />
-                      <Button
-                        onClick={() => addTokensMutation.mutate(tokenAmount)}
-                        className="bg-amber-600 hover:bg-amber-700"
-                      >
-                        <Sparkles className="w-4 h-4 mr-2" />
-                        Add
-                      </Button>
+                    <div className="mt-4">
+                      <Link to={createPageUrl("DeckBuilder")}>
+                        <Button className="bg-purple-600 hover:bg-purple-700">Build your first deck</Button>
+                      </Link>
                     </div>
-                    {progress && (
-                      <p className="text-slate-400 text-sm">Current: {progress.tokens} tokens</p>
-                    )}
                   </div>
-                )}
+                ) : (
+                  <>
+                    <p className="text-sm text-slate-400">Based on your custom decks ({decksCount} total).</p>
 
-                <div className="p-3 bg-red-950/30 border border-red-500/50 rounded-lg">
-                  <p className="text-red-400 text-sm">
-                    ⚠️ Warning: Deactivating admin mode will reset your entire account including stats, cards, and progress.
-                  </p>
-                </div>
+                    <div className="space-y-3">
+                      {elementBreakdown.map((row) => (
+                        <div key={row.key} className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <p className="text-slate-200">
+                              {row.emoji} {row.label}
+                            </p>
+                            <p className="text-xs text-slate-400">
+                              {row.count} ({row.pct}%)
+                            </p>
+                          </div>
+                          <Progress value={row.pct} />
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="pt-2">
+                      <Link to={createPageUrl("DeckBuilder")}>
+                        <Button variant="outline" className="w-full">
+                          Open Deck Builder
+                        </Button>
+                      </Link>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
           </motion.div>
+
+          {/* Custom Deck Usage */}
+          <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }}>
+            <Card className="bg-slate-900/70 border-slate-700">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-white">Custom Deck Usage</CardTitle>
+              </CardHeader>
+
+              <CardContent className="space-y-3">
+                {decksCount === 0 ? (
+                  <div className="rounded-xl border border-slate-700 bg-slate-950/40 p-4">
+                    <p className="text-slate-200 font-semibold">You have no custom decks</p>
+                    <p className="text-sm text-slate-400 mt-1">
+                      Build a deck to start playing and tracking performance.
+                    </p>
+
+                    <div className="mt-4">
+                      <Link to={createPageUrl("DeckBuilder")}>
+                        <Button className="bg-purple-600 hover:bg-purple-700">Build your first deck</Button>
+                      </Link>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="space-y-2">
+                      {deckUsage.slice(0, 6).map((d) => {
+                        const meta = elementMeta(d.element);
+                        const updated = d.updated_date ? new Date(d.updated_date) : null;
+
+                        return (
+                          <div
+                            key={d.id || d.name}
+                            className="flex items-center justify-between rounded-xl border border-slate-700 bg-slate-950/40 p-3"
+                          >
+                            <div className="min-w-0">
+                              <p className="text-slate-200 font-semibold truncate">
+                                {meta.emoji} {d.name}
+                              </p>
+                              <p className="text-xs text-slate-500">
+                                {d.total_cards} cards
+                                {updated ? ` • Updated ${updated.toLocaleDateString()}` : ""}
+                              </p>
+                            </div>
+
+                            <div className="text-right">
+                              <p className="text-slate-200 font-bold">{d.wins}</p>
+                              <p className="text-xs text-slate-500">wins</p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="pt-2">
+                      <Link to={createPageUrl("DeckBuilder")}>
+                        <Button variant="outline" className="w-full">
+                          Manage Decks
+                        </Button>
+                      </Link>
+                    </div>
+
+                    <p className="text-xs text-slate-500">
+                      Deck win tracking uses playerprogress.deck_wins. If wins are not updating yet, they will display as 0 until match
+                      result writeback is wired.
+                    </p>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </motion.div>
+        </div>
+
+        {/* Admin */}
+{isAdmin && (
+  <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} className="mt-6">
+    <Card className={`bg-slate-900/70 border ${adminMode ? "border-red-500/70" : "border-slate-700"}`}>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-white flex items-center gap-2">
+          🛠️ Admin Mode
+        </CardTitle>
+      </CardHeader>
+
+      <CardContent className="space-y-4">
+        <p className="text-sm text-slate-300">
+          Toggle Admin Mode for testing. Deactivating will reset account progress to defaults.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            onClick={() => toggleAdminModeMutation.mutate(!adminMode)}
+            className={adminMode ? "bg-red-600 hover:bg-red-700" : "bg-green-600 hover:bg-green-700"}
+            disabled={toggleAdminModeMutation.isPending}
+          >
+            {adminMode ? "Deactivate & Reset" : "Activate"}
+          </Button>
+
+          <span
+            className={`text-xs px-3 py-1 rounded-full border ${
+              adminMode
+                ? "text-red-200 border-red-500/50 bg-red-500/10"
+                : "text-slate-300 border-slate-600 bg-slate-800/40"
+            }`}
+          >
+            Status: {adminMode ? "Active" : "Off"}
+          </span>
+        </div>
+
+        {adminMode && (
+          <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3">
+            <p className="text-sm text-red-200">
+              ⚠️ Deactivating admin mode will reset account progress.
+            </p>
+          </div>
         )}
+      </CardContent>
+    </Card>
+  </motion.div>
+)}
+
       </div>
     </div>
+  );
+}
+
+function Stat({ label, value, icon: Icon, color = "text-white" }) {
+  return (
+    <Card className="bg-slate-800/50 border-slate-700">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm text-slate-400 flex items-center gap-2">
+          {Icon && <Icon className="w-4 h-4" />}
+          {label}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className={`text-3xl font-bold ${color}`}>{value ?? 0}</p>
+      </CardContent>
+    </Card>
   );
 }

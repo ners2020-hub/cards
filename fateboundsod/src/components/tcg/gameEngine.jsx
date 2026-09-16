@@ -1,27 +1,27 @@
-// TCG Game Engine - Core Logic
+// src/components/tcg/gameEngine.js
+// TCG Game Engine - Core Logic (Generic Effect Pipeline)
+//
+// Goals:
+// - No card-id hardcoding for gameplay logic
+// - Use card.abilities[] (DB) to resolve effects
+// - Keep UI fallbacks OUT of engine (no cardUtils here)
+// ----------------------------
+// Global rules config
+// ----------------------------
 
-export function createInitialPlayerState(deck, controllers) {
-  // Shuffle deck without controllers
-  const shuffledDeck = shuffleArray([...deck]);
+// No one can attack on turn 1 or 2, no matter what.
+const ATTACKS_LOCKED_UNTIL_TURN = 3;
 
-  // Draw starting hand
-  const hand = shuffledDeck.slice(0, 5);
-  const remainingDeck = shuffledDeck.slice(5);
-
-  return {
-    shards: 10,
-    maxShards: 10,
-    controllers: [null, null, null],
-    restingControllers: controllers, // Controllers in resting zone
-    creatures: [null, null, null, null, null],
-    artifacts: [null, null, null],
-    hand: hand,
-    deckSize: remainingDeck.length,
-    deck: remainingDeck,
-    graveyard: [],
-    void: []
-  };
+// Summoning sickness: units must wait 1 full turn after being summoned.
+// (So if summoned on turn N, they can attack starting turn N+1, but also never before ATTACKS_LOCKED_UNTIL_TURN.)
+function canAttackBySummonTurn(summonedTurn, currentTurn) {
+  if (!summonedTurn) return false;
+  return summonedTurn < currentTurn;
 }
+
+// ----------------------------
+// State helpers
+// ----------------------------
 
 export function shuffleArray(array) {
   const result = [...array];
@@ -32,11 +32,556 @@ export function shuffleArray(array) {
   return result;
 }
 
+function deepClone(obj) {
+  return structuredClone ? structuredClone(obj) : JSON.parse(JSON.stringify(obj));
+}
+
+
+function removeOneCardFromHand(hand, card) {
+  const key = card?.code || card?.id;
+  if (!Array.isArray(hand) || !key) return hand || [];
+  const copy = [...hand];
+  const idx = copy.findIndex(c => (c?.code || c?.id) === key);
+  if (idx !== -1) copy.splice(idx, 1);
+  return copy;
+}
+
+function getActiveController(state) {
+  return (state.controllers || []).find(c => c && c.isActive) || null;
+}
+
+function setNextActiveController(state) {
+  const next = (state.controllers || []).find(c => c !== null);
+  if (!next) return state;
+  const idx = (state.controllers || []).indexOf(next);
+  (state.controllers || [])[idx] = { ...next, isActive: true };
+  return state;
+}
+
+function removeCardFromZone(zone, card) {
+  const idx = zone.findIndex(c => c === card);
+  if (idx === -1) return zone;
+  const copy = [...zone];
+  copy.splice(idx, 1);
+  return copy;
+}
+
+function findCardInZones(state, cardId, zones = ['deck', 'hand', 'graveyard']) {
+  for (const z of zones) {
+    const zone = state[z];
+    if (!Array.isArray(zone)) continue;
+    const found = zone.find(c => c && c.id === cardId);
+    if (found) return { zone: z, card: found };
+  }
+  return null;
+}
+
+// ----------------------------
+// Card instance constructors
+// ----------------------------
+
+function createCreatureInstance(card, currentTurnNumber = 1) {
+  // Check for battle/spell immunity in passive abilities
+  const immunities = [];
+  if (Array.isArray(card.abilities)) {
+    for (const ab of card.abilities) {
+      if (ab.trigger === 'passive' && ab.action === 'battleImmunity') {
+        immunities.push('Indestructible');
+      }
+      if (ab.trigger === 'passive' && ab.action === 'spellImmunity') {
+        immunities.push('ImmuneToSpells');
+      }
+    }
+  }
+
+  // Note: even if a card has Haste/Charge, we still hard-lock all attacks until turn 3.
+  const hasHasteLike = !!(card.keywords?.includes('Charge') || card.keywords?.includes('Haste'));
+
+  return {
+    card,
+    currentAP: card.ap,
+    currentCH: card.ch,
+    maxCH: card.ch,
+    statusEffects: immunities,
+    // Engine uses summonedTurn + turn gating to determine attack legality.
+    summonedTurn: currentTurnNumber,
+    canAttack: hasHasteLike, // will be corrected by startNewTurn() and global lock checks
+    hasAttacked: false,
+    isZombified: false,
+    attacksRemaining: 1,
+    equippedArtifacts: []
+  };
+}
+
+function createArtifactInstance(card, equippedTo = null) {
+  return {
+    card,
+    turnsActive: 0,
+    turnsRemaining: null,
+    equippedTo
+  };
+}
+
+// ----------------------------
+// Abilities: DB-only (no effect registry)
+// ----------------------------
+
+/**
+ * Returns a list of ability objects from card.abilities[] filtered by trigger.
+ * Source of truth: DB (card.abilities[]). If missing, silently returns [].
+ */
+function getAbilitiesForTrigger(card, trigger) {
+  if (Array.isArray(card?.abilities) && card.abilities.length > 0) {
+    return card.abilities.filter(ab => {
+      if (!ab) return false;
+      const abTrigger = ab.trigger || ab.type;
+      return abTrigger === trigger && (ab.action || ab.params);
+    });
+  }
+  return [];
+}
+
+/**
+ * Resolve a single DB ability object by dispatching on ability.action.
+ * Unified pipeline for all DB-driven abilities.
+ */
+function resolveDbAbility({
+  playerState,
+  opponentState,
+  ability,
+  sourceCard,
+  sourceType,
+  sourceIndex,
+  targetInfo,
+  engineContext
+}) {
+  const action = ability.action || 'none';
+  const params = ability.params || {};
+  const cost = ability.cost || {};
+const target = (typeof ability.target === 'string'
+  ? ability.target
+  : (ability.target && typeof ability.target === 'object' ? ability.target.type : null)
+) || 'none';
+
+  let ps = playerState;
+  let os = opponentState;
+
+  // Cost validation: check shards before executing
+  if (cost.shards && ps.shards < cost.shards) {
+    return { playerState, opponentState };
+  }
+  if (cost.ch && sourceType === 'controller') {
+    const activeCtrl = getActiveController(ps);
+    if (activeCtrl && activeCtrl.currentCH < cost.ch) {
+      return { playerState, opponentState };
+    }
+    // Validate controllers array exists
+    if (!ps.controllers) ps.controllers = [null, null, null];
+  }
+
+  // Deduct costs
+  if (cost.shards) {
+    ps = { ...ps, shards: Math.max(0, ps.shards - cost.shards) };
+  }
+  if (cost.ch && sourceType === 'controller') {
+    const activeIdx = ps.controllers.findIndex(c => c && c.isActive);
+    if (activeIdx >= 0) {
+      const newControllers = [...(ps.controllers || [])];
+      newControllers[activeIdx] = {
+        ...newControllers[activeIdx],
+        currentCH: newControllers[activeIdx].currentCH - cost.ch
+      };
+      ps = { ...ps, controllers: newControllers };
+    }
+  }
+
+  // Dispatch by action
+  switch (action) {
+    case 'draw': {
+      const count = params.count ?? 1;
+      for (let i = 0; i < count; i++) {
+        if (!ps.deck || ps.deck.length === 0) break;
+        const [drawnCard, ...remainingDeck] = ps.deck;
+        ps = {
+          ...ps,
+          hand: [...(ps.hand || []), drawnCard],
+          deck: remainingDeck,
+          deckSize: remainingDeck.length
+        };
+      }
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'damage': {
+      const amount = params.amount ?? 1;
+      const isSpellDamage = sourceType === 'spell' || sourceType === 'artifact';
+
+      if (target === 'self' && sourceType === 'creature' && sourceIndex !== null) {
+        const c = ps.creatures[sourceIndex];
+        if (c) {
+          const newCreatures = [...ps.creatures];
+          newCreatures[sourceIndex] = { ...c, currentCH: c.currentCH - amount };
+          if (newCreatures[sourceIndex].currentCH <= 0) {
+            newCreatures[sourceIndex] = null;
+            ps.graveyard = [...(ps.graveyard || []), c.card];
+          }
+          ps = { ...ps, creatures: newCreatures };
+        }
+        return { playerState: ps, opponentState: os };
+      } else if (target === 'self' && sourceType === 'controller' && sourceIndex !== null) {
+        const c = ps.controllers[sourceIndex];
+        if (c) {
+          const newControllers = [...ps.controllers];
+          newControllers[sourceIndex] = { ...c, currentCH: c.currentCH - amount };
+          if (newControllers[sourceIndex].currentCH <= 0) {
+            newControllers[sourceIndex] = null;
+            ps = setNextActiveController(ps);
+          }
+          ps = { ...ps, controllers: newControllers };
+        }
+        return { playerState: ps, opponentState: os };
+      } else if (target === 'enemy_controller') {
+        const idx = (os?.controllers || []).findIndex(c => c && c.isActive);
+        if (idx >= 0 && os) {
+          const ctrl = (os.controllers || [])[idx];
+          const immuneToSpells = isSpellDamage && ctrl.statusEffects?.includes('ImmuneToSpells');
+          if (immuneToSpells) {
+            return { playerState: ps, opponentState: os };
+          }
+          const newControllers = [...(os.controllers || [])];
+          newControllers[idx] = { ...ctrl, currentCH: Math.max(0, ctrl.currentCH - amount) };
+          if (newControllers[idx].currentCH <= 0) {
+            newControllers[idx] = null;
+            const next = newControllers.find(c => c !== null);
+            if (next) {
+              const nextIdx = newControllers.indexOf(next);
+              newControllers[nextIdx] = { ...next, isActive: true };
+            }
+          }
+          os = { ...os, controllers: newControllers };
+        }
+      } else if (target === 'all_enemies' || (target === 'all_enemy_creatures' && os)) {
+        const elementFilter = params.elementFilter;
+        const cardIdFilter = params.cardIdFilter;
+        const killedCards = [];
+        const newCreatures = (os.creatures || []).map(c => {
+          if (!c) return null;
+          if (elementFilter && c.card.element !== elementFilter) return c;
+          if (cardIdFilter && c.card.id !== cardIdFilter) return c;
+          const immuneToSpells = isSpellDamage && c.statusEffects?.includes('ImmuneToSpells');
+          if (immuneToSpells) return c;
+          const newCH = c.currentCH - amount;
+          if (newCH <= 0) {
+            killedCards.push(c.card);
+            return null;
+          }
+          return { ...c, currentCH: newCH };
+        });
+        os = { ...os, creatures: newCreatures, graveyard: [...(os.graveyard || []), ...killedCards] };
+      } else if (target === 'all_enemy_controllers' && os) {
+        const newControllers = (os.controllers || []).map(c => {
+          if (!c) return null;
+          const immuneToSpells = isSpellDamage && c.statusEffects?.includes('ImmuneToSpells');
+          if (immuneToSpells) return c;
+          const newCH = c.currentCH - amount;
+          if (newCH <= 0) return null;
+          return { ...c, currentCH: newCH };
+        });
+        os = { ...os, controllers: newControllers };
+        os = setNextActiveController(os);
+      } else if (target === 'all_ally_creatures') {
+        const killedCards = [];
+        const newCreatures = (ps.creatures || []).map(c => {
+          if (!c) return null;
+          const newCH = c.currentCH - amount;
+          if (newCH <= 0) {
+            killedCards.push(c.card);
+            return null;
+          }
+          return { ...c, currentCH: newCH };
+        });
+        ps = { ...ps, creatures: newCreatures, graveyard: [...(ps.graveyard || []), ...killedCards] };
+      } else if (target === 'all_ally_controllers') {
+        const newControllers = (ps.controllers || []).map(c => {
+          if (!c) return null;
+          const newCH = c.currentCH - amount;
+          if (newCH <= 0) return null;
+          return { ...c, currentCH: newCH };
+        });
+        ps = { ...ps, controllers: newControllers };
+        ps = setNextActiveController(ps);
+      } else if (targetInfo?.type === 'creature' && os) {
+        const tc = os.creatures[targetInfo.index];
+        if (tc) {
+          const immuneToSpells = isSpellDamage && tc.statusEffects?.includes('ImmuneToSpells');
+          if (immuneToSpells) {
+            return { playerState: ps, opponentState: os };
+          }
+          const newOppCreatures = [...os.creatures];
+          const newCH = tc.currentCH - amount;
+          if (newCH <= 0) {
+            newOppCreatures[targetInfo.index] = null;
+            if (tc.originalOwner === 'player') {
+              ps = { ...ps, graveyard: [...(ps.graveyard || []), tc.card] };
+            } else {
+              os = { ...os, graveyard: [...(os.graveyard || []), tc.card] };
+            }
+            os = { ...os, creatures: newOppCreatures };
+          } else {
+            newOppCreatures[targetInfo.index] = { ...tc, currentCH: newCH };
+            os = { ...os, creatures: newOppCreatures };
+          }
+        }
+      }
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'heal': {
+      const amount = params.amount ?? 1;
+      if (target === 'self' && sourceType === 'creature' && sourceIndex !== null) {
+        const c = ps.creatures[sourceIndex];
+        if (c) {
+          const newCreatures = [...ps.creatures];
+          newCreatures[sourceIndex] = { ...c, currentCH: Math.min(c.maxCH, c.currentCH + amount) };
+          ps = { ...ps, creatures: newCreatures };
+        }
+      } else if (target === 'self' && sourceType === 'controller' && sourceIndex !== null) {
+        const c = ps.controllers[sourceIndex];
+        if (c) {
+          const newControllers = [...ps.controllers];
+          newControllers[sourceIndex] = { ...c, currentCH: Math.min(c.maxCH, c.currentCH + amount) };
+          ps = { ...ps, controllers: newControllers };
+        }
+      } else if (target === 'ally_controller') {
+        const idx = ps.controllers.findIndex(c => c && c.isActive);
+        if (idx >= 0) {
+          const ctrl = ps.controllers[idx];
+          const newControllers = [...ps.controllers];
+          newControllers[idx] = { ...ctrl, currentCH: Math.min(ctrl.maxCH, ctrl.currentCH + amount) };
+          ps = { ...ps, controllers: newControllers };
+        }
+      } else if (target === 'all_ally_creatures') {
+        const newCreatures = (ps.creatures || []).map(c => {
+          if (!c) return null;
+          return { ...c, currentCH: Math.min(c.maxCH, c.currentCH + amount) };
+        });
+        ps = { ...ps, creatures: newCreatures };
+      } else if (target === 'all_ally_controllers') {
+        const newControllers = (ps.controllers || []).map(c => {
+          if (!c) return null;
+          return { ...c, currentCH: Math.min(c.maxCH, c.currentCH + amount) };
+        });
+        ps = { ...ps, controllers: newControllers };
+      } else if (targetInfo?.type === 'creature' && ps) {
+        const tc = ps.creatures[targetInfo.index];
+        if (tc) {
+          const newCreatures = [...ps.creatures];
+          newCreatures[targetInfo.index] = { ...tc, currentCH: Math.min(tc.maxCH, tc.currentCH + amount) };
+          ps = { ...ps, creatures: newCreatures };
+        }
+      }
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'gainShards': {
+      // IMPORTANT: shards are NOT capped. maxShards is just the UI "baseline" (starts at 10).
+      const amount = params.amount ?? 1;
+      ps = { ...ps, shards: (Number(ps.shards ?? 0) + amount) };
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'summon': {
+      const cardId = params.cardId;
+      if (!cardId) return { playerState: ps, opponentState: os };
+
+      const found = findCardInZones(ps, cardId, ['deck', 'hand']);
+      if (!found) return { playerState: ps, opponentState: os };
+
+      let nextState = { ...ps };
+      nextState[found.zone] = removeCardFromZone(nextState[found.zone], found.card);
+      if (found.zone === 'deck') nextState.deckSize = nextState.deck.length;
+
+      const slot = nextState.creatures.findIndex(c => c === null);
+      if (slot === -1) return { playerState: ps, opponentState: os };
+
+      const inst = createCreatureInstance(found.card, params.currentTurnNumber ?? 1);
+      const newCreatures = [...nextState.creatures];
+      newCreatures[slot] = inst;
+      nextState.creatures = newCreatures;
+
+      ps = nextState;
+      return { playerState: ps, opponentState: os };
+    }
+
+    // (rest unchanged)
+    case 'summonTokens': {
+      const cardCode = params.card_code || params.cardCode;
+      const count = params.amount ?? params.count ?? 1;
+
+      let nextState = { ...ps };
+      let added = 0;
+
+      if (cardCode) {
+        // Tokens must resolve by card.code from DB. We rely on a caller-provided resolver
+        // so the engine stays DB-driven but remains pure.
+        const resolveCardByCode = engineContext?.resolveCardByCode;
+        const tokenTemplate = typeof resolveCardByCode === 'function' ? resolveCardByCode(cardCode) : null;
+
+        for (let tokenIdx = 0; tokenIdx < count; tokenIdx++) {
+          const emptySlot = nextState.creatures.findIndex(c => c === null);
+          if (emptySlot === -1) break;
+
+          const tokenCard = tokenTemplate
+            ? { ...tokenTemplate, id: tokenTemplate.code || tokenTemplate.id || cardCode, code: tokenTemplate.code || cardCode, is_token: true }
+            : {
+                // Fallback only (dev safety). Proper token cards should exist in DB.
+                id: cardCode,
+                code: cardCode,
+                name: params.name || 'Token',
+                card_type: 'creature',
+                element: params.element || 'neutral',
+                cost: 0,
+                ap: params.ap ?? 1,
+                ch: params.ch ?? 1,
+                description: params.description || 'A summoned token.',
+                keywords: params.keywords || (params.guardian ? ['guardian'] : []),
+                abilities: params.abilities || null,
+                art_url: params.art_url || '',
+                is_token: true,
+                __placeholder_token: true
+              };
+
+          const inst = createCreatureInstance(tokenCard, params.currentTurnNumber ?? 1);
+          inst.canAttack = params.canAttack ?? false;
+          inst.isToken = true;
+
+          const newCreatures = [...nextState.creatures];
+          newCreatures[emptySlot] = inst;
+          nextState.creatures = newCreatures;
+          added++;
+        }
+      } else {
+        const ap = params.ap ?? 1;
+        const ch = params.ch ?? 1;
+        const name = params.name || 'Token';
+        const element = params.element || 'neutral';
+        const canAttack = params.canAttack ?? false;
+
+        for (let i = 0; i < nextState.creatures.length && added < count; i++) {
+          if (nextState.creatures[i] !== null) continue;
+
+          const tokenCard = {
+            id: `token_${element}_${Date.now()}_${added}`,
+            name,
+            card_type: 'creature',
+            element,
+            cost: 0,
+            ap,
+            ch,
+            description: 'A summoned token.',
+            keywords: params.guardian ? ['guardian'] : [],
+            art_url: '',
+            is_token: true
+          };
+
+          const inst = createCreatureInstance(tokenCard, params.currentTurnNumber ?? 1);
+          inst.canAttack = canAttack;
+          inst.isToken = true;
+
+          const newCreatures = [...nextState.creatures];
+          newCreatures[i] = inst;
+          nextState.creatures = newCreatures;
+          added++;
+        }
+      }
+
+      ps = nextState;
+      return { playerState: ps, opponentState: os };
+    }
+
+    // unchanged cases...
+    case 'destroy':
+    case 'search':
+    case 'applyStatus':
+    case 'modifyStats':
+    case 'preventPlay':
+    case 'setFlag':
+    case 'clearFlag':
+    case 'takeControl':
+    case 'battleImmunity':
+    case 'spellImmunity':
+    case 'aura':
+    case 'passive':
+    case 'none':
+    default:
+      return { playerState: ps, opponentState: os };
+  }
+}
+
+// Helper reused in resolveAbility
+function applyStatusToCreature_fn(state, idx, status, options = {}) {
+  const c = state.creatures[idx];
+  if (!c) return state;
+  const statuses = new Set([...(c.statusEffects || [])]);
+  statuses.add(status);
+  const updated = { ...c, statusEffects: [...statuses] };
+
+  if (status === 'Freeze' || status === 'Bind') updated.canAttack = false;
+  if (status === 'Paralyze') updated.skipNextAction = true;
+
+  if (options.duration) updated[`${status.toLowerCase()}Duration`] = options.duration;
+
+  const newCreatures = [...state.creatures];
+  newCreatures[idx] = updated;
+  return { ...state, creatures: newCreatures };
+}
+
+// ----------------------------
+// Public API: initial state
+// ----------------------------
+
+export function createInitialPlayerState(deck, controllers) {
+  const filteredDeck = (deck || []).filter(c => c.card_type !== 'controller');
+  const controllersFromDeck = (deck || []).filter(c => c.card_type === 'controller');
+  const allControllers = [...(controllers || []), ...controllersFromDeck];
+
+  // Deduplicate controllers by card ID to prevent duplicate resting controllers
+  const uniqueControllers = [];
+  const seenIds = new Set();
+  for (const ctrl of allControllers) {
+    const id = ctrl?.id || ctrl?.code;
+    if (id && !seenIds.has(id)) {
+      seenIds.add(id);
+      uniqueControllers.push(ctrl);
+    }
+  }
+
+  const shuffledDeck = shuffleArray([...filteredDeck]);
+
+  const hand = shuffledDeck.slice(0, 5);
+  const remainingDeck = shuffledDeck.slice(5);
+
+  return {
+    // Start baseline at 10 (UI shows /10), but gains are uncapped.
+    shards: 10,
+    maxShards: 10,
+    controllers: [null, null, null],
+    restingControllers: Array.isArray(uniqueControllers) ? uniqueControllers : [],
+    creatures: [null, null, null, null, null],
+    artifacts: [null, null, null],
+    hand,
+    deckSize: remainingDeck.length,
+    deck: remainingDeck,
+    graveyard: [],
+    void: []
+  };
+}
+
 export function drawCard(playerState) {
-  if (playerState.deck.length === 0) return playerState;
-  
+  if (!playerState.deck || playerState.deck.length === 0) return playerState;
+
   const [drawnCard, ...remainingDeck] = playerState.deck;
-  
+
   return {
     ...playerState,
     hand: [...playerState.hand, drawnCard],
@@ -45,880 +590,1636 @@ export function drawCard(playerState) {
   };
 }
 
-export function activateRestingController(playerState, controllerIndex, targetSlot = null) {
-  const controller = playerState.restingControllers[controllerIndex];
-  if (!controller || playerState.shards < controller.cost) return playerState;
-  
-  let emptySlot = targetSlot;
-  if (emptySlot === null) {
-    emptySlot = playerState.controllers.findIndex(c => c === null);
-  }
-  
-  if (emptySlot === -1 || playerState.controllers[emptySlot] !== null) return playerState;
-  
-  // Check if The Kraken is already on field BEFORE placing Neptune
-  const hasKrakenOnField = controller.name === 'Neptune' && 
-                           playerState.controllers.some(c => c && c.card.name === 'The Kraken');
-  
-  const newControllers = [...playerState.controllers];
-  newControllers[emptySlot] = {
-    card: controller,
-    currentCH: controller.ch,
-    maxCH: controller.ch,
-    isActive: emptySlot === 0 || !playerState.controllers.some(c => c !== null)
-  };
-  
-  const newRestingControllers = playerState.restingControllers.filter((_, i) => i !== controllerIndex);
-  
-  let newState = {
-    ...playerState,
-    controllers: newControllers,
-    restingControllers: newRestingControllers,
-    shards: playerState.shards - controller.cost
-  };
+// ----------------------------
+// Generic resolution pipeline
+// ----------------------------
 
-  // Handle On Play effects
-  if (controller.name === 'Neptune') {
-    // Search deck for Water Safe
-    const waterSafe = newState.deck.find(c => c.name === 'Water Safe') || 
-                      newState.graveyard.find(c => c.name === 'Water Safe');
-    
-    if (waterSafe) {
-      newState.hand = [...newState.hand, waterSafe];
-      if (newState.deck.find(c => c.name === 'Water Safe')) {
-        newState.deck = newState.deck.filter(c => c.name !== 'Water Safe' || c !== waterSafe);
-        newState.deckSize = newState.deck.length;
-      } else {
-        newState.graveyard = newState.graveyard.filter(c => c !== waterSafe);
+function resolveTriggeredEffects({
+  sourceState,
+  targetState,
+  trigger,
+  sourceCard,
+  sourceType,
+  sourceIndex,
+  targetInfo = null,
+  engineContext = null
+}) {
+  let ps = sourceState;
+  let os = targetState;
+
+  const abilities = getAbilitiesForTrigger(sourceCard, trigger);
+  for (const ab of abilities) {
+    // Check condition
+    if (ab.condition?.type === 'ifOnField') {
+      let isOnField = false;
+      if (sourceType === 'creature' && sourceIndex !== null && ps.creatures[sourceIndex]) {
+        isOnField = ps.creatures[sourceIndex].card.id === sourceCard.id;
+      } else if (sourceType === 'controller' && sourceIndex !== null && ps.controllers[sourceIndex]) {
+        isOnField = ps.controllers[sourceIndex].card.id === sourceCard.id;
+      } else if (sourceType === 'artifact' && sourceIndex !== null && ps.artifacts[sourceIndex]) {
+        isOnField = ps.artifacts[sourceIndex].card.id === sourceCard.id;
       }
+      if (!isOnField) continue;
     }
-    
-    // If The Kraken was already on field, add Kraken Slash
-    if (hasKrakenOnField) {
-      const krakenSlash = newState.deck.find(c => c.name === 'Kraken Slash') || 
-                          newState.graveyard.find(c => c.name === 'Kraken Slash');
-      
-      if (krakenSlash) {
-        newState.hand = [...newState.hand, krakenSlash];
-        if (newState.deck.find(c => c.name === 'Kraken Slash')) {
-          newState.deck = newState.deck.filter(c => c.name !== 'Kraken Slash' || c !== krakenSlash);
-          newState.deckSize = newState.deck.length;
-        } else {
-          newState.graveyard = newState.graveyard.filter(c => c !== krakenSlash);
-        }
-      }
+
+    if (ab.action && ab.action !== 'unknown') {
+      const out = resolveDbAbility({
+        playerState: ps,
+        opponentState: os,
+        ability: ab,
+        sourceCard,
+        sourceType,
+        sourceIndex,
+        targetInfo,
+        engineContext
+      });
+      ps = out.playerState;
+      os = out.opponentState;
+    } else if (ab.params && ab.params.type) {
+      const out = resolveEffect({
+        playerState: ps,
+        opponentState: os,
+        effect: ab.params,
+        effectKey: ab.id,
+        sourceCard,
+        sourceType,
+        sourceIndex,
+        targetInfo,
+        engineContext
+      });
+      ps = out.playerState;
+      os = out.opponentState;
     }
   }
-  
-  return newState;
+
+  return { playerState: ps, opponentState: os };
 }
 
-export function playCard(playerState, card, slotType, slotIndex, opponentState = null) {
-  // Check cost
-  if (playerState.shards < card.cost) return { playerState, opponentState };
+/**
+ * Core effect resolver.
+ * Add new effect "type" handlers here over time.
+ */
+function resolveEffect({
+  playerState,
+  opponentState,
+  effect,
+  effectKey,
+  sourceCard,
+  sourceType,
+  sourceIndex,
+  targetInfo,
+  engineContext
+}) {
+  let ps = playerState;
+  let os = opponentState;
 
-  const newState = {
-    ...playerState,
-    shards: playerState.shards - card.cost,
-    hand: playerState.hand.filter(c => c !== card)
+  const activeCtrl = getActiveController(ps);
+
+  // ----------------------------
+  // Utility closures
+  // ----------------------------
+
+  const addToHand = (state, card) => ({ ...state, hand: [...(state.hand || []), card] });
+
+  const spendShards = (state, amount) => ({ ...state, shards: Math.max(0, state.shards - amount) });
+
+  // IMPORTANT: shards are NOT capped
+  const gainShards = (state, amount) => ({ ...state, shards: Number(state.shards ?? 0) + amount });
+
+  const healController = (state, amount, which = 'active') => {
+    const idx = which === 'active'
+      ? (state.controllers || []).findIndex(c => c && c.isActive)
+      : 0;
+
+    if (idx < 0 || !(state.controllers || [])[idx]) return state;
+    const ctrl = (state.controllers || [])[idx];
+    const newControllers = [...(state.controllers || [])];
+    newControllers[idx] = { ...ctrl, currentCH: ctrl.currentCH + amount };
+    return { ...state, controllers: newControllers };
   };
 
-  let newOpponentState = opponentState ? { ...opponentState } : null;
-
-  // Handle different card types
-  if (card.card_type === 'creature') {
-    const emptySlot = slotIndex ?? playerState.creatures.findIndex(c => c === null);
-    if (emptySlot !== -1) {
-      const newCreatures = [...playerState.creatures];
-      const newCreature = {
-        card: card,
-        currentAP: card.ap,
-        currentCH: card.ch,
-        maxCH: card.ch,
-        statusEffects: [],
-        canAttack: card.keywords?.includes('Charge') || card.name === 'Fire Knight', // Charge: attack same turn
-        hasAttacked: false,
-        isZombified: false,
-        attacksRemaining: 1,
-        equippedArtifacts: []
-      };
-      
-      newCreatures[emptySlot] = newCreature;
-      newState.creatures = newCreatures;
-      
-      // Apply passive effects after summoning
-      const stateWithPassives = applyPassiveEffects({ ...newState, creatures: newCreatures });
-      newState.creatures = stateWithPassives.creatures;
-      
-      // Flame Wolf Pack: Play second one for 0 cost
-      if (card.name === 'Flame Wolf' && playerState.hand.some(c => c.name === 'Flame Wolf')) {
-        const secondWolf = playerState.hand.find(c => c.name === 'Flame Wolf');
-        newState.packBonusCard = secondWolf;
-      }
-
-      // Trigger on-play effects
-      if (newOpponentState) {
-        newOpponentState = triggerOnPlayEffect(card, newOpponentState);
+  const damageActiveController = (state, amount) => {
+    const idx = (state.controllers || []).findIndex(c => c && c.isActive);
+    if (idx < 0) return state;
+    const ctrl = (state.controllers || [])[idx];
+    const newControllers = [...(state.controllers || [])];
+    newControllers[idx] = { ...ctrl, currentCH: ctrl.currentCH - amount };
+    if (newControllers[idx].currentCH <= 0) {
+      newControllers[idx] = null;
+      const next = newControllers.find(c => c !== null);
+      if (next) {
+        const nextIdx = newControllers.indexOf(next);
+        newControllers[nextIdx] = { ...next, isActive: true };
       }
     }
-  } else if (card.card_type === 'artifact' || (card.card_type === 'spell' && card.is_persistent)) {
-    const emptySlot = slotIndex ?? playerState.artifacts.findIndex(a => a === null);
-    if (emptySlot !== -1) {
-      const newArtifacts = [...playerState.artifacts];
-      const artifactInstance = {
-        card: card,
-        turnsActive: 0,
-        equippedTo: null // null means not equipped, or creature index
-      };
-      newArtifacts[emptySlot] = artifactInstance;
-      newState.artifacts = newArtifacts;
-    }
-  } else if (card.card_type === 'spell') {
-    // Instant spell - goes to graveyard after resolution
-    newState.graveyard = [...playerState.graveyard, card];
+    return { ...state, controllers: newControllers };
+  };
 
-    // Apply spell effects
-    if (card.name === 'Black Spell') {
-      // Summon 2 Tokens (2/2)
-      const tokenCard = {
-        id: 'token_shadow',
-        name: 'Shadow Token',
-        card_type: 'creature',
-        element: 'shadow',
-        cost: 0,
-        ap: 2,
-        ch: 2,
-        description: 'A manifestation of shadow magic.',
-        keywords: [],
-        image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/3a4d238fe_02xBlackSpell.png'
-      };
+  const findEmptyCreatureSlot = state => (state.creatures || []).findIndex(c => c === null);
 
-      const newCreatures = [...newState.creatures];
-      let tokensAdded = 0;
+  const summonCardIdToField = (state, cardId, options = {}) => {
+    const found = findCardInZones(state, cardId, options.searchZones || ['deck', 'hand', 'graveyard']);
+    if (!found) return state;
 
-      // Add up to 2 tokens
-      for (let i = 0; i < newCreatures.length && tokensAdded < 2; i++) {
-        if (newCreatures[i] === null) {
-          newCreatures[i] = {
-            card: tokenCard,
-            currentAP: 2,
-            currentCH: 2,
-            maxCH: 2,
-            statusEffects: [],
-            canAttack: false, // Cannot attack this turn
-            hasAttacked: false,
-            isZombified: false,
-            attacksRemaining: 1,
-            equippedArtifacts: []
+    let nextState = { ...state };
+
+    nextState[found.zone] = removeCardFromZone(nextState[found.zone], found.card);
+    if (found.zone === 'deck') nextState.deckSize = nextState.deck.length;
+
+    const slot = findEmptyCreatureSlot(nextState);
+    if (slot === -1) return nextState;
+
+    const inst = createCreatureInstance(found.card, options.currentTurnNumber ?? 1);
+    inst.canAttack = !!options.canAttack;
+    inst.attacksRemaining = options.attacksRemaining ?? inst.attacksRemaining;
+    inst.temporary = !!options.temporary;
+
+    const newCreatures = [...nextState.creatures];
+    newCreatures[slot] = inst;
+    nextState.creatures = newCreatures;
+
+    return nextState;
+  };
+
+  const summonTokens = (state, tokenSpec) => {
+    const { count, ap, ch, element, name, keywords, image_url } = tokenSpec;
+    let nextState = { ...state };
+    let added = 0;
+
+    const resolveCardByCode = engineContext?.resolveCardByCode;
+    const template = tokenSpec?.card_code && typeof resolveCardByCode === 'function'
+      ? resolveCardByCode(tokenSpec.card_code)
+      : null;
+
+    for (let i = 0; i < nextState.creatures.length && added < count; i++) {
+      if (nextState.creatures[i] !== null) continue;
+
+      const tokenCard = template
+        ? { ...template, id: template.code || template.id || tokenSpec.card_code, code: template.code || tokenSpec.card_code, is_token: true }
+        : {
+            id: tokenSpec.id || `token_${element || 'generic'}_${Math.random().toString(16).slice(2)}`,
+            name: name || 'Token',
+            card_type: 'creature',
+            element: element || 'neutral',
+            cost: 0,
+            ap,
+            ch,
+            description: tokenSpec.description || 'A summoned token.',
+            keywords: keywords || [],
+            art_url: image_url || '',
+            is_token: true,
+            __placeholder_token: true
           };
-          tokensAdded++;
-        }
-      }
 
-      newState.creatures = newCreatures;
-    } else if (card.name === 'Dracos Inferno') {
-      // Check requirements: Draco (creature) OR Draco Alec (controller)
-      const hasDraco = playerState.creatures.some(c => c && c.card.name === 'Draco');
-      const hasDracoAlec = playerState.controllers.some(c => c && c.card.name === 'Draco Alec');
+      const inst = createCreatureInstance(tokenCard, tokenSpec.currentTurnNumber ?? 1);
+      inst.canAttack = !!tokenSpec.canAttack;
+      inst.attacksRemaining = tokenSpec.attacksRemaining ?? 1;
+      inst.isToken = true;
 
-      if (hasDraco || hasDracoAlec) {
-        const bothPresent = hasDraco && hasDracoAlec;
-        const damage = bothPresent ? 5 : 3;
+      const newCreatures = [...nextState.creatures];
+      newCreatures[i] = inst;
+      nextState.creatures = newCreatures;
 
-        // Deal damage to all opponent non-controller creatures
-        if (newOpponentState) {
-          const newOpponentCreatures = newOpponentState.creatures.map(c => {
-            if (!c) return null;
+      added++;
+    }
 
-            const newCH = c.currentCH - damage;
-            if (newCH <= 0) {
-              newOpponentState.graveyard = [...newOpponentState.graveyard, c.card];
-              return null;
-            }
+    return nextState;
+  };
 
-            return { ...c, currentCH: newCH };
+  const applyStatusToCreature = (state, idx, status, options = {}) => {
+    return applyStatusToCreature_fn(state, idx, status, options);
+  };
+
+  // ----------------------------
+  // Effect "type" handlers
+  // ----------------------------
+
+  switch (effect.type) {
+    case 'passive':
+      return { playerState: ps, opponentState: os };
+
+    case 'onPlay': {
+      if (effect.search) {
+        const zones = effect.search.location === 'graveyard' ? ['graveyard']
+          : effect.search.location === 'hand' ? ['hand']
+            : effect.search.location === 'deck' ? ['deck']
+              : ['deck', 'hand', 'graveyard'];
+
+        let found = null;
+        for (const z of zones) {
+          const zone = ps[z] || [];
+          found = zone.find(c => {
+            if (!c) return false;
+            if (effect.search.id && c.id !== effect.search.id) return false;
+            if (effect.search.cardType && c.card_type !== effect.search.cardType) return false;
+            if (effect.search.element && c.element !== effect.search.element) return false;
+            return true;
           });
-
-          newOpponentState.creatures = newOpponentCreatures;
-
-          // Bonus: If both present, deal 2 damage to enemy controller
-          if (bothPresent) {
-            const activeCtrl = newOpponentState.controllers.find(c => c && c.isActive);
-            if (activeCtrl) {
-              const ctrlIdx = newOpponentState.controllers.indexOf(activeCtrl);
-              const newControllers = [...newOpponentState.controllers];
-              newControllers[ctrlIdx] = {
-                ...activeCtrl,
-                currentCH: activeCtrl.currentCH - 2
-              };
-
-              if (newControllers[ctrlIdx].currentCH <= 0) {
-                newControllers[ctrlIdx] = null;
-                const nextCtrl = newControllers.find(c => c !== null);
-                if (nextCtrl) {
-                  const nextIndex = newControllers.indexOf(nextCtrl);
-                  newControllers[nextIndex] = { ...nextCtrl, isActive: true };
-                }
-              }
-
-              newOpponentState.controllers = newControllers;
-            }
+          if (found) {
+            const newZone = removeCardFromZone(zone, found);
+            ps = { ...ps, [z]: newZone };
+            if (z === 'deck') ps.deckSize = ps.deck.length;
+            ps = addToHand(ps, found);
+            break;
           }
         }
       }
-    } else if (card.name === 'Water Safe') {
-      // Water Safe is persistent - already handled in playCard as artifact
-    } else if (card.name === 'Blizzard') {
-      // Freeze all non-Cryo creatures for 1 turn
-      if (newOpponentState) {
-        newOpponentState.creatures = newOpponentState.creatures.map(c => {
-          if (!c || c.card.element === 'cryo') return c;
-          return { ...c, statusEffects: [...(c.statusEffects || []), 'Freeze'], canAttack: false };
-        });
-      }
-    } else if (card.name === 'Whirlpool') {
-      // Opponent cannot play Spells next turn
-      if (newOpponentState) {
-        newOpponentState.cannotPlaySpells = true;
-      }
-    } else if (card.name === 'Tidal Wave') {
-      // Return all non-Water creatures to owner's hands
-      const newOpponentCreatures = [...newOpponentState.creatures];
-      newOpponentState.creatures = newOpponentCreatures.map(c => {
-        if (!c || c.card.element === 'water') return c;
-        newOpponentState.hand = [...newOpponentState.hand, c.card];
-        return null;
-      });
 
-      const newPlayerCreatures = [...newState.creatures];
-      newState.creatures = newPlayerCreatures.map(c => {
-        if (!c || c.card.element === 'water') return c;
-        newState.hand = [...newState.hand, c.card];
-        return null;
-      });
-    } else if (card.name === 'Enflamed') {
-      // Requires target selection - for now implement basic version
-      // Spirit Bonus: If Supreme Fire Spirit active, mark creature to explode
-      const hasSupremeFireSpirit = playerState.controllers.some(c => c && c.card.name === 'Supreme Fire Spirit');
+      if (effect.summonTokens) {
+        ps = summonTokens(ps, effect.summonTokens);
+      }
 
-      if (hasSupremeFireSpirit && newOpponentState) {
-        // Mark first enemy creature to explode (in full implementation, player would select target)
-        const targetCreatureIndex = newOpponentState.creatures.findIndex(c => c !== null);
-        if (targetCreatureIndex !== -1) {
-          const targetCreature = newOpponentState.creatures[targetCreatureIndex];
-          newOpponentState.creatures[targetCreatureIndex] = {
-            ...targetCreature,
-            markedForExplosion: true,
-            explosionDamage: targetCreature.currentCH
+      if (effect.summon) {
+        ps = summonCardIdToField(ps, effect.summon, { searchZones: ['deck', 'hand'] });
+      }
+
+      if (effect.freeze && effect.targetType && targetInfo?.type === 'creature') {
+        os = applyStatusToCreature(os, targetInfo.index, 'Freeze', { duration: effect.freeze });
+      }
+
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'onDeath': {
+      if (effect.heal && effect.target === 'controller') {
+        ps = healController(ps, effect.heal, 'active');
+      }
+      if (effect.onDeath?.freeze && os && targetInfo?.type === 'creature') {
+        os = applyStatusToCreature(os, targetInfo.index, 'Freeze', { duration: effect.onDeath.freeze });
+      }
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'onKill': {
+      if (effect.heal && effect.target === 'controller') {
+        ps = healController(ps, effect.heal, 'active');
+      }
+      if (effect.effect === 'no_exhaust' && sourceType === 'creature' && sourceIndex !== null) {
+        const c = ps.creatures[sourceIndex];
+        if (c) {
+          const newCreatures = [...ps.creatures];
+          newCreatures[sourceIndex] = { ...c, hasAttacked: false, canAttack: true };
+          ps = { ...ps, creatures: newCreatures };
+        }
+      }
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'activated': {
+      if (effect.cost?.ch && activeCtrl) {
+        const ctrlIdx = ps.controllers.indexOf(activeCtrl);
+        const newControllers = [...ps.controllers];
+        const newCH = activeCtrl.currentCH - effect.cost.ch;
+        if (newCH < 0) return { playerState: ps, opponentState: os };
+        newControllers[ctrlIdx] = { ...activeCtrl, currentCH: newCH };
+        ps = { ...ps, controllers: newControllers };
+      }
+
+      if (effect.draw) {
+        for (let i = 0; i < effect.draw; i++) ps = drawCard(ps);
+      }
+
+      if (effect.gainShards) {
+        ps = gainShards(ps, effect.gainShards);
+      }
+
+      return { playerState: ps, opponentState: os };
+    }
+
+    case 'targeted': {
+      if (!os) return { playerState: ps, opponentState: os };
+
+      if (effect.cost?.shards) {
+        if (ps.shards < effect.cost.shards) return { playerState: ps, opponentState: os };
+        ps = spendShards(ps, effect.cost.shards);
+      }
+
+      if (effect.damage) {
+        if (effect.targetType === 'enemy_controller' || targetInfo?.type === 'controller') {
+          os = damageActiveController(os, effect.damage);
+        } else if (targetInfo?.type === 'creature') {
+          const tc = os.creatures[targetInfo.index];
+          if (tc) {
+            const newOppCreatures = [...os.creatures];
+            const newCH = tc.currentCH - effect.damage;
+            if (newCH <= 0) {
+              os = { ...os, graveyard: [...(os.graveyard || []), tc.card] };
+              newOppCreatures[targetInfo.index] = null;
+            } else {
+              newOppCreatures[targetInfo.index] = { ...tc, currentCH: newCH };
+            }
+            os = { ...os, creatures: newOppCreatures };
+          }
+        }
+      }
+
+      if (effect.heal) {
+        if (targetInfo?.type === 'controller') {
+          os = healController(os, effect.heal, 'active');
+        }
+        if (targetInfo?.type === 'ally_controller') {
+          ps = healController(ps, effect.heal, 'active');
+        }
+        if (targetInfo?.type === 'creature') {
+          const tc = ps.creatures[targetInfo.index];
+          if (tc) {
+            const newCreatures = [...ps.creatures];
+            newCreatures[targetInfo.index] = { ...tc, currentCH: tc.currentCH + effect.heal };
+            ps = { ...ps, creatures: newCreatures };
+          }
+        }
+      }
+
+      if (effect.paralyze && targetInfo?.type === 'creature') {
+        os = applyStatusToCreature(os, targetInfo.index, 'Paralyze', { duration: effect.paralyze });
+      }
+
+      if (effect.bind && targetInfo?.type === 'creature') {
+        os = applyStatusToCreature(os, targetInfo.index, 'Bind', { duration: effect.bind });
+      }
+
+      if (effect.apBonus && targetInfo?.type === 'creature') {
+        const tc = ps.creatures[targetInfo.index];
+        if (tc) {
+          const newCreatures = [...ps.creatures];
+          newCreatures[targetInfo.index] = {
+            ...tc,
+            currentAP: tc.currentAP + effect.apBonus,
+            temporaryAP: (tc.temporaryAP || 0) + effect.apBonus
           };
-        }
-      } else if (newOpponentState) {
-        // Standard: Destroy first enemy creature
-        const targetCreatureIndex = newOpponentState.creatures.findIndex(c => c !== null);
-        if (targetCreatureIndex !== -1) {
-          const targetCreature = newOpponentState.creatures[targetCreatureIndex];
-          newOpponentState.graveyard = [...newOpponentState.graveyard, targetCreature.card];
-          newOpponentState.creatures[targetCreatureIndex] = null;
+          ps = { ...ps, creatures: newCreatures };
         }
       }
-    }
+
+      if (effect.haste && targetInfo?.type === 'creature') {
+        const tc = ps.creatures[targetInfo.index];
+        if (tc) {
+          const newCreatures = [...ps.creatures];
+          newCreatures[targetInfo.index] = { ...tc, canAttack: true };
+          ps = { ...ps, creatures: newCreatures };
+        }
+      }
+
+      return { playerState: ps, opponentState: os };
     }
 
-  return { playerState: newState, opponentState: newOpponentState };
+    case 'aoe': {
+      if (!os) return { playerState: ps, opponentState: os };
+      const out = dealDamageToAllCreatures({
+        attackerState: ps,
+        defenderState: os,
+        damage: effect.damage || 0,
+        protectElement: effect.protectElement || null,
+        sourceCard,
+        sourceType
+      });
+      return { playerState: out.attackerState, opponentState: out.defenderState };
+    }
+
+    case 'spell': {
+      return { playerState: ps, opponentState: os };
+    }
+
+    default:
+      return { playerState: ps, opponentState: os };
+  }
 }
 
-function triggerOnPlayEffect(card, opponentState) {
-  // Sizzle effect: Deal 1 damage to enemy controller
-  if (card.description?.includes('Sizzle')) {
-    const activeControllers = opponentState.controllers.filter(c => c !== null);
-    if (activeControllers.length > 0) {
-      // Pick random controller
-      const targetController = activeControllers[Math.floor(Math.random() * activeControllers.length)];
-      const ctrlIndex = opponentState.controllers.indexOf(targetController);
-      
-      const newControllers = [...opponentState.controllers];
-      newControllers[ctrlIndex] = {
-        ...targetController,
-        currentCH: Math.max(0, targetController.currentCH - 1)
-      };
+// ----------------------------
+// Generic AOE with protectElement + onDeath triggers
+// ----------------------------
 
-      // Check if controller is destroyed
-      if (newControllers[ctrlIndex].currentCH <= 0) {
-        newControllers[ctrlIndex] = null;
-        // Activate next controller if available
-        const nextCtrl = newControllers.find(c => c !== null && !c.isActive);
-        if (nextCtrl) {
-          const nextIndex = newControllers.indexOf(nextCtrl);
-          newControllers[nextIndex] = { ...nextCtrl, isActive: true };
-        }
+function dealDamageToAllCreatures({ attackerState, defenderState, damage, protectElement = null, sourceCard, sourceType }) {
+  let as = attackerState;
+  let ds = defenderState;
+
+  const killedDefenders = [];
+
+  const newDefCreatures = (ds.creatures || []).map((c, idx) => {
+    if (!c) return null;
+
+    if (protectElement && c.card?.element === protectElement) return c;
+
+    const newCH = c.currentCH - damage;
+    if (newCH <= 0) {
+      killedDefenders.push({ creature: c, index: idx });
+      if (c.originalOwner === 'attacker') {
+        as.graveyard = [...(as.graveyard || []), c.card];
+      } else {
+        ds.graveyard = [...(ds.graveyard || []), c.card];
       }
-
-      return { ...opponentState, controllers: newControllers };
+      return null;
     }
+    return { ...c, currentCH: newCH };
+  });
+
+  ds = { ...ds, creatures: newDefCreatures };
+
+  for (const kd of killedDefenders) {
+    const out = resolveTriggeredEffects({
+      sourceState: ds,
+      targetState: as,
+      trigger: 'onDeath',
+      sourceCard: kd.creature.card,
+      sourceType: 'creature',
+      sourceIndex: kd.index,
+      targetInfo: null
+    });
+    ds = out.playerState;
+    as = out.opponentState;
   }
 
-  return opponentState;
+  return { attackerState: as, defenderState: ds };
 }
 
-export function performAttack(attackerState, defenderState, targetIndex, attackerIndex, attackerType = 'creature') {
+// ----------------------------
+// Main actions: play cards, activate controllers, combat
+// ----------------------------
+
+export function activateRestingController(
+  playerState,
+  controllerIndex,
+  targetSlot = null,
+  currentTurnNumber = 1,
+  engineContext = null
+) {
+  const ps = deepClone(playerState);
+  const controller = ps.restingControllers[controllerIndex];
+  if (!controller || ps.shards < controller.cost) return playerState;
+
+  let slot = targetSlot;
+  if (slot === null) slot = ps.controllers.findIndex(c => c === null);
+  if (slot === -1 || ps.controllers[slot] !== null) return playerState;
+
+  const newControllers = [...ps.controllers];
+  newControllers[slot] = {
+    card: controller,
+    currentCH: controller.ch,
+    maxCH: controller.ch,
+    currentAP: controller.ap || 0,
+    isActive: slot === 0 || !ps.controllers.some(c => c !== null),
+    // Summoning sickness tracking
+    summonedTurn: currentTurnNumber,
+    canAttack: false,
+    hasAttacked: false,
+    attacksRemaining: 1,
+    equippedArtifacts: []
+  };
+
+  ps.controllers = newControllers;
+  ps.restingControllers = (ps.restingControllers || []).filter((_, i) => i !== controllerIndex);
+  ps.shards -= controller.cost;
+
+  const out = resolveTriggeredEffects({
+    sourceState: ps,
+    targetState: null,
+    trigger: 'onPlay',
+    sourceCard: controller,
+    sourceType: 'controller',
+    sourceIndex: slot,
+    engineContext
+  });
+
+  const final = applyPassiveEffects(out.playerState);
+  return final;
+}
+
+
+function getOnPlayTargetRequirement(card) {
+  const abs = getAbilitiesForTrigger(card, 'onPlay');
+  for (const ab of abs) {
+    const t = (typeof ab?.target === 'string'
+      ? ab.target
+      : (ab?.target && typeof ab.target === 'object' ? ab.target.type : null)
+    );
+
+    if (!t) continue;
+    const tl = String(t).toLowerCase();
+
+    // Auto-targets / no selection needed
+    if (tl === 'none' || tl === 'self' || tl === 'enemy_controller' || tl === 'ally_controller') continue;
+    if (tl.startsWith('all_') || tl === 'all_enemies') continue;
+
+    // Anything that mentions a creature requires a chosen target
+    if (tl.includes('creature')) return true;
+
+    // Some controller-targeted effects may need a selection (future-proof)
+    if (tl.includes('controller') && tl.includes('target')) return true;
+  }
+  return false;
+}
+
+export function playCard(
+  playerState,
+  card,
+  slotType,
+  slotIndex,
+  opponentState = null,
+  attachTargetIndex = null,
+  targetInfo = null,
+  currentTurnNumber = 1,
+  engineContext = null
+) {
+  if (playerState.shards < card.cost) return { playerState, opponentState, needsTarget: false };
+
+  let ps = deepClone(playerState);
+  let os = opponentState ? deepClone(opponentState) : null;
+
+  ps.shards -= card.cost;
+  ps.hand = removeOneCardFromHand(ps.hand || [], card);
+
+  const onPlayNeedsTarget = getOnPlayTargetRequirement(card);
+
+  if (card.card_type === 'creature') {
+    const emptySlot = slotIndex ?? (ps.creatures || []).findIndex(c => c === null);
+    if (emptySlot === -1) return { playerState: ps, opponentState: os, needsTarget: false };
+
+    const inst = createCreatureInstance(card, currentTurnNumber);
+    inst.canAttack = false;
+
+    const newCreatures = [...ps.creatures];
+    newCreatures[emptySlot] = inst;
+    ps.creatures = newCreatures;
+
+    if (onPlayNeedsTarget && !targetInfo) {
+      return {
+        playerState: ps,
+        opponentState: os,
+        needsTarget: true,
+        pendingPlay: { sourceType: 'creature', sourceIndex: emptySlot, card, currentTurnNumber }
+      };
+    }
+
+    const out = resolveTriggeredEffects({
+      sourceState: ps,
+      targetState: os,
+      trigger: 'onPlay',
+      sourceCard: card,
+      sourceType: 'creature',
+      sourceIndex: emptySlot,
+      targetInfo,
+      engineContext
+    });
+    ps = out.playerState;
+    os = out.opponentState;
+
+    ps = applyPassiveEffects(ps);
+    if (os) os = applyPassiveEffects(os);
+
+    return { playerState: ps, opponentState: os, needsTarget: false };
+  }
+
+  if (card.card_type === 'artifact') {
+    const needsAttachment = !!card.is_attachment ||
+      card.description?.toLowerCase().includes('attach') ||
+      card.description?.toLowerCase().includes('equip');
+    if (needsAttachment && attachTargetIndex === null) {
+      return { playerState, opponentState, needsTarget: true, cardToAttach: card };
+    }
+
+    const emptySlot = slotIndex ?? ps.artifacts.findIndex(a => a === null);
+    if (emptySlot === -1) return { playerState: ps, opponentState: os, needsTarget: false };
+
+    const artifactInstance = createArtifactInstance(card, attachTargetIndex);
+    const newArtifacts = [...ps.artifacts];
+    newArtifacts[emptySlot] = artifactInstance;
+    ps.artifacts = newArtifacts;
+
+    attachInstance(ps, artifactInstance, attachTargetIndex);
+
+    if (onPlayNeedsTarget && !targetInfo) {
+      return {
+        playerState: ps,
+        opponentState: os,
+        needsTarget: true,
+        pendingPlay: { sourceType: 'artifact', sourceIndex: emptySlot, card, currentTurnNumber }
+      };
+    }
+
+    const out = resolveTriggeredEffects({
+      sourceState: ps,
+      targetState: os,
+      trigger: 'onPlay',
+      sourceCard: card,
+      sourceType: 'artifact',
+      sourceIndex: emptySlot,
+      targetInfo,
+      engineContext
+    });
+    ps = out.playerState;
+    os = out.opponentState;
+
+    ps = applyPassiveEffects(ps);
+    if (os) os = applyPassiveEffects(os);
+
+    return { playerState: ps, opponentState: os, needsTarget: false };
+  }
+
+  if (card.card_type === 'spell') {
+    const needsAttachment = !!card.is_attachment ||
+      card.description?.toLowerCase().includes('attach') ||
+      card.description?.toLowerCase().includes('equip');
+    if (needsAttachment && attachTargetIndex === null) {
+      return { playerState, opponentState, needsTarget: true, cardToAttach: card };
+    }
+
+    const emptySlot = slotIndex ?? ps.artifacts.findIndex(a => a === null);
+    if (emptySlot === -1) return { playerState: ps, opponentState: os, needsTarget: false };
+
+    const spellInstance = createArtifactInstance(card, attachTargetIndex);
+    const newArtifacts = [...ps.artifacts];
+    newArtifacts[emptySlot] = spellInstance;
+    ps.artifacts = newArtifacts;
+
+    attachInstance(ps, spellInstance, attachTargetIndex);
+
+    if (onPlayNeedsTarget && !targetInfo) {
+      return {
+        playerState: ps,
+        opponentState: os,
+        needsTarget: true,
+        pendingPlay: {
+          sourceType: 'spell',
+          sourceIndex: emptySlot,
+          card,
+          artifactSlotIndex: emptySlot,
+          currentTurnNumber
+        }
+      };
+    }
+
+    const out = resolveTriggeredEffects({
+      sourceState: ps,
+      targetState: os,
+      trigger: 'onPlay',
+      sourceCard: card,
+      sourceType: 'spell',
+      sourceIndex: emptySlot,
+      targetInfo,
+      engineContext
+    });
+    ps = out.playerState;
+    os = out.opponentState;
+
+    let postResolve = null;
+    if (!card.is_persistent) {
+      postResolve = {
+        type: 'discardFromArtifacts',
+        artifactSlotIndex: emptySlot,
+        cardKey: card.code || card.id,
+        toGraveyard: true
+      };
+    }
+
+    ps = applyPassiveEffects(ps);
+    if (os) os = applyPassiveEffects(os);
+
+    return { playerState: ps, opponentState: os, needsTarget: false, postResolve };
+  }
+
+  return { playerState: ps, opponentState: os, needsTarget: false };
+}
+
+export function resolvePendingPlay(playerState, opponentState, pendingPlay, targetInfo = null, engineContext = null) {
+  if (!pendingPlay?.card) return { playerState, opponentState, postResolve: null };
+
+  let ps = deepClone(playerState);
+  let os = opponentState ? deepClone(opponentState) : null;
+
+  const out = resolveTriggeredEffects({
+    sourceState: ps,
+    targetState: os,
+    trigger: 'onPlay',
+    sourceCard: pendingPlay.card,
+    sourceType: pendingPlay.sourceType,
+    sourceIndex: pendingPlay.sourceIndex ?? null,
+    targetInfo,
+    engineContext
+  });
+
+  ps = applyPassiveEffects(out.playerState);
+  os = out.opponentState ? applyPassiveEffects(out.opponentState) : out.opponentState;
+
+  let postResolve = null;
+  if (pendingPlay.sourceType === 'spell' && !pendingPlay.card.is_persistent) {
+    const slot = pendingPlay.artifactSlotIndex ?? pendingPlay.sourceIndex;
+    postResolve = {
+      type: 'discardFromArtifacts',
+      artifactSlotIndex: slot,
+      cardKey: pendingPlay.card.code || pendingPlay.card.id,
+      toGraveyard: true
+    };
+  }
+
+  return { playerState: ps, opponentState: os, postResolve };
+}
+
+export function applyPostResolve(playerState, postResolve) {
+  if (!postResolve || postResolve.type !== 'discardFromArtifacts') return playerState;
+  const ps = deepClone(playerState);
+  const idx = postResolve.artifactSlotIndex;
+  if (idx === null || idx === undefined || idx < 0) return ps;
+
+  const inst = (ps.artifacts || [])[idx];
+  if (!inst) return ps;
+
+  const newArtifacts = [...(ps.artifacts || [])];
+  newArtifacts[idx] = null;
+  ps.artifacts = newArtifacts;
+
+  if (postResolve.toGraveyard) {
+    ps.graveyard = [...(ps.graveyard || []), inst.card];
+  }
+  return ps;
+}
+
+function attachInstance(ps, instance, attachTargetIndex) {
+  if (attachTargetIndex === null || attachTargetIndex === undefined) return;
+
+  if (attachTargetIndex >= 0) {
+    const target = ps.creatures[attachTargetIndex];
+    if (!target) return;
+    const newCreatures = [...ps.creatures];
+    newCreatures[attachTargetIndex] = {
+      ...target,
+      equippedArtifacts: [...(target.equippedArtifacts || []), instance]
+    };
+    ps.creatures = newCreatures;
+    return;
+  }
+
+  if (attachTargetIndex === -1) {
+    const activeIdx = ps.controllers.findIndex(c => c && c.isActive);
+    if (activeIdx === -1) return;
+    const newControllers = [...ps.controllers];
+    const ctrl = newControllers[activeIdx];
+    newControllers[activeIdx] = {
+      ...ctrl,
+      equippedArtifacts: [...(ctrl.equippedArtifacts || []), instance]
+    };
+    ps.controllers = newControllers;
+  }
+}
+
+// ----------------------------
+// Combat
+// ----------------------------
+
+export function performAttack(
+  attackerState,
+  defenderState,
+  targetIndex,
+  attackerIndex,
+  attackerType = 'creature',
+  currentTurnNumber = 1,
+  engineContext = null
+) {
+  const earlyOut = (message) => ({ attackerState, defenderState, blocked: true, message });
+
+  // Hard lock: no attacks on turn 1 or 2, no matter what.
+  if (Number(currentTurnNumber ?? 1) < ATTACKS_LOCKED_UNTIL_TURN) {
+    return earlyOut('Attacks are locked until turn 3.');
+  }
+
+  let as = deepClone(attackerState);
+  let ds = deepClone(defenderState);
+
   let attacker;
   let attackerAP;
   let isControllerAttack = false;
 
   if (attackerType === 'controller') {
-    attacker = attackerState.controllers[attackerIndex];
-    if (!attacker || !attacker.isActive) {
-      return { attackerState, defenderState };
+    attacker = as.controllers[attackerIndex];
+    if (!attacker) return earlyOut('No attacker.');
+
+    // Summoning sickness for controllers
+    if (!canAttackBySummonTurn(attacker.summonedTurn, currentTurnNumber)) {
+      return earlyOut('Summoning sickness.');
     }
-    attackerAP = attacker.card.ap;
+
+    const remaining = Number(attacker.attacksRemaining ?? 1);
+    if (!attacker.canAttack || remaining <= 0) return earlyOut('No attacks remaining.');
+
+    attackerAP = attacker.currentAP ?? attacker.card.ap ?? 0;
     isControllerAttack = true;
   } else {
-    attacker = attackerState.creatures[attackerIndex];
-    if (!attacker || !attacker.canAttack || attacker.hasAttacked) {
-      return { attackerState, defenderState };
+    attacker = as.creatures[attackerIndex];
+    if (!attacker) return earlyOut('No attacker.');
+
+    // Summoning sickness for creatures
+    if (!canAttackBySummonTurn(attacker.summonedTurn, currentTurnNumber)) {
+      return earlyOut('Summoning sickness.');
     }
-    attackerAP = attacker.currentAP;
+
+    const remaining = Number(attacker.attacksRemaining ?? 1);
+    if (!attacker.canAttack || remaining <= 0) return earlyOut('No attacks remaining.');
+
+    attackerAP = attacker.currentAP ?? 0;
   }
 
-  // Check Water Safe protection
-  const waterSafeActive = defenderState.artifacts.some(a => a && a.card.name === 'Water Safe');
-  const attackerElement = isControllerAttack ? attacker.card.element : attacker.card.element;
-  
-  let targetDefender = null;
+  const guardianCreature = (ds.creatures || []).find(c => c && c.card.keywords?.includes('Guardian'));
   let defenderIndex = targetIndex;
-  
-  if (waterSafeActive && attackerElement !== 'water') {
-    // Check if target is water type
-    if (targetIndex >= 0) {
-      const targetCreature = defenderState.creatures[targetIndex];
-      if (targetCreature && targetCreature.card.element === 'water') {
-        return { 
-          attackerState, 
-          defenderState, 
-          blocked: true, 
-          message: '🛡️ Water Safe prevents non-Water attacks on Water creatures!' 
-        };
-      }
-    } else {
-      // Attacking controller
-      const targetController = defenderState.controllers.find(c => c && c.isActive);
-      if (targetController && targetController.card.element === 'water') {
-        return { 
-          attackerState, 
-          defenderState, 
-          blocked: true, 
-          message: '🛡️ Water Safe prevents non-Water attacks on Water controllers!' 
-        };
-      }
-    }
-  }
-
-  // Check if there are defending creatures with Guardian
-  const guardianCreature = defenderState.creatures.find(c => c && c.card.keywords?.includes('Guardian'));
+  let targetDefender = null;
 
   if (guardianCreature) {
-    // Must attack guardian first
-    defenderIndex = defenderState.creatures.indexOf(guardianCreature);
+    defenderIndex = ds.creatures.indexOf(guardianCreature);
     targetDefender = guardianCreature;
-  } else if (targetIndex >= 0 && defenderState.creatures[targetIndex]) {
-    targetDefender = defenderState.creatures[targetIndex];
-  } else if (targetIndex === -1 || !defenderState.creatures.some(c => c !== null)) {
-    // Direct controller attack (targetIndex -1 or no creatures on field)
-    const activeController = defenderState.controllers.find(c => c && c.isActive);
-    if (activeController) {
-      const ctrlIndex = defenderState.controllers.indexOf(activeController);
-      const newControllers = [...defenderState.controllers];
-      newControllers[ctrlIndex] = {
-        ...activeController,
-        currentCH: activeController.currentCH - attackerAP
-      };
-
-      // Check if controller is destroyed
-      if (newControllers[ctrlIndex].currentCH <= 0) {
-        newControllers[ctrlIndex] = null;
-        // Activate next controller if available
-        const nextCtrl = newControllers.find(c => c !== null);
-        if (nextCtrl) {
-          const nextIndex = newControllers.indexOf(nextCtrl);
-          newControllers[nextIndex] = { ...nextCtrl, isActive: true };
-        }
-      }
-
-      // Mark attacker as having attacked
-      if (isControllerAttack) {
-        // Controllers don't exhaust from attacking, but track they attacked this turn
-        return {
-          attackerState: { ...attackerState },
-          defenderState: { ...defenderState, controllers: newControllers }
-        };
-      } else {
-        const newAttackerCreatures = [...attackerState.creatures];
-        const remainingAttacks = (attacker.attacksRemaining || 1) - 1;
-        newAttackerCreatures[attackerIndex] = {
-          ...attacker,
-          hasAttacked: remainingAttacks === 0,
-          attacksRemaining: remainingAttacks
-        };
-
-        return {
-          attackerState: { ...attackerState, creatures: newAttackerCreatures },
-          defenderState: { ...defenderState, controllers: newControllers }
-        };
-      }
-    }
+  } else if (targetIndex >= 0 && (ds.creatures || [])[targetIndex]) {
+    targetDefender = ds.creatures[targetIndex];
   }
 
-  // Combat between creatures (or controller vs creature)
-  if (targetDefender) {
-    const newDefenderCreatures = [...defenderState.creatures];
-    const newAttackerCreatures = [...attackerState.creatures];
-    const newAttackerControllers = [...attackerState.controllers];
-    
-    const attackerDealtDamage = attackerAP;
-    const defenderDealtDamage = targetDefender.currentAP;
-    
-    // Check if defender will be destroyed
-    const defenderWillDie = targetDefender.currentCH <= attackerDealtDamage;
-
-    // Apply damage to defender
-    targetDefender.currentCH -= attackerDealtDamage;
-    
-    // Controllers attacking creatures take recoil damage
+  // Helper to consume one attack on the attacker after combat resolution
+  const consumeAttack = () => {
     if (isControllerAttack) {
-      const ctrlIndex = attackerState.controllers.indexOf(attacker);
-      newAttackerControllers[ctrlIndex] = {
-        ...attacker,
-        currentCH: attacker.currentCH - defenderDealtDamage
+      const newControllers = [...as.controllers];
+      const aCtrl = newControllers[attackerIndex];
+      if (!aCtrl) return;
+      const nextRemaining = Math.max(0, Number(aCtrl.attacksRemaining ?? 1) - 1);
+      newControllers[attackerIndex] = {
+        ...aCtrl,
+        attacksRemaining: nextRemaining,
+        hasAttacked: nextRemaining <= 0,
+        canAttack: nextRemaining > 0
       };
-      
-      // Check if controller died from recoil
-      if (newAttackerControllers[ctrlIndex].currentCH <= 0) {
-        newAttackerControllers[ctrlIndex] = null;
-        const nextCtrl = newAttackerControllers.find(c => c !== null);
-        if (nextCtrl) {
-          const nextIndex = newAttackerControllers.indexOf(nextCtrl);
-          newAttackerControllers[nextIndex] = { ...nextCtrl, isActive: true };
-        }
-      }
+      as.controllers = newControllers;
     } else {
-      // First Strike: No recoil if attacker has higher AP and kills target
-      const hasFirstStrike = attacker.card.name === 'Flame Samurai' && attacker.currentAP > targetDefender.currentAP && defenderWillDie;
-      
-      // Attacker takes recoil damage unless First Strike kills the target
-      if (!hasFirstStrike) {
-        attacker.currentCH -= defenderDealtDamage;
-      }
+      const newCreatures = [...as.creatures];
+      const a = newCreatures[attackerIndex];
+      if (!a) return;
+      const nextRemaining = Math.max(0, Number(a.attacksRemaining ?? 1) - 1);
+      newCreatures[attackerIndex] = {
+        ...a,
+        attacksRemaining: nextRemaining,
+        hasAttacked: nextRemaining <= 0,
+        canAttack: nextRemaining > 0
+      };
+      as.creatures = newCreatures;
     }
+  };
 
-    // Check if defender died - trigger on-death effects
-    if (targetDefender.currentCH <= 0) {
-      defenderState.graveyard = [...defenderState.graveyard, targetDefender.card];
-      newDefenderCreatures[defenderIndex] = null;
-      
-      // Fire Paladin: Holy Fire - heal controller when destroying enemy
-      if (!isControllerAttack && attacker.card.name === 'Fire Paladin') {
-        const activeCtrl = attackerState.controllers.find(c => c && c.isActive);
-        if (activeCtrl) {
-          const ctrlIdx = attackerState.controllers.indexOf(activeCtrl);
-          newAttackerControllers[ctrlIdx] = {
-            ...activeCtrl,
-            currentCH: activeCtrl.currentCH + 2
-          };
-        }
-      }
-    } else {
-      newDefenderCreatures[defenderIndex] = targetDefender;
-    }
-
-    // Check if attacker died (only creatures can die, not controllers in this context)
-    if (!isControllerAttack && attacker.currentCH <= 0) {
-      attackerState.graveyard = [...attackerState.graveyard, attacker.card];
-      newAttackerCreatures[attackerIndex] = null;
-      
-      // Flaming Sword Bearer: On Death - search for equipment
-      if (attacker.card.name === 'Flaming Sword Bearer') {
-        const equipment = attackerState.deck.find(c => 
-          c.name === 'Cursed Flame Sword' || c.name === 'Katana of Fate'
-        );
-        if (equipment) {
-          attackerState.hand = [...attackerState.hand, equipment];
-          attackerState.deck = attackerState.deck.filter(c => c !== equipment);
-          attackerState.deckSize = attackerState.deck.length;
-        } else {
-          const equipmentGY = attackerState.graveyard.find(c => 
-            c.name === 'Cursed Flame Sword' || c.name === 'Katana of Fate'
-          );
-          if (equipmentGY) {
-            attackerState.hand = [...attackerState.hand, equipmentGY];
-            attackerState.graveyard = attackerState.graveyard.filter(c => c !== equipmentGY);
-          }
-        }
-      }
-    } else if (!isControllerAttack) {
-      const remainingAttacks = (attacker.attacksRemaining || 1) - 1;
-      attacker.hasAttacked = remainingAttacks === 0;
-      attacker.attacksRemaining = remainingAttacks;
-      newAttackerCreatures[attackerIndex] = attacker;
-    }
-
-    return {
-      attackerState: { ...attackerState, creatures: newAttackerCreatures, controllers: newAttackerControllers },
-      defenderState: { ...defenderState, creatures: newDefenderCreatures }
+  // If targeting controller (-1) OR no creatures exist, hit active controller
+  if (!targetDefender && (targetIndex === -1 || !(ds.creatures || []).some(c => c !== null))) {
+    ds = {
+      ...ds,
+      controllers: (ds.controllers || []).map(c => {
+        if (!c || !c.isActive) return c;
+        const nextCH = c.currentCH - attackerAP;
+        if (nextCH <= 0) return null;
+        return { ...c, currentCH: nextCH };
+      })
     };
+    ds = setNextActiveController(ds);
+
+    // Recoil is based on defender controller AP
+    const defenderCtrl = defenderState.controllers.find(c => c && c.isActive);
+    const recoil = defenderCtrl?.card?.ap || 0;
+
+    if (isControllerAttack) {
+      const newControllers = [...as.controllers];
+      const aCtrl = newControllers[attackerIndex];
+      if (aCtrl) {
+        const immuneToRecoil = aCtrl.statusEffects?.includes('Indestructible') ||
+          aCtrl.statusEffects?.includes('ImmuneToRecoil');
+        const nextCH = immuneToRecoil ? aCtrl.currentCH : aCtrl.currentCH - recoil;
+
+        if (!immuneToRecoil && nextCH <= 0) {
+          newControllers[attackerIndex] = null;
+          as.controllers = newControllers;
+          as = setNextActiveController(as);
+        } else {
+          newControllers[attackerIndex] = { ...aCtrl, currentCH: nextCH };
+          as.controllers = newControllers;
+        }
+      }
+    } else {
+      const newCreatures = [...as.creatures];
+      const a = newCreatures[attackerIndex];
+      if (a) {
+        const immuneToRecoil = a.statusEffects?.includes('Indestructible') ||
+          a.statusEffects?.includes('ImmuneToRecoil');
+        const nextCH = immuneToRecoil ? a.currentCH : a.currentCH - recoil;
+
+        if (!immuneToRecoil && nextCH <= 0) {
+          as.graveyard = [...(as.graveyard || []), a.card];
+          newCreatures[attackerIndex] = null;
+          as.creatures = newCreatures;
+
+          const out = resolveTriggeredEffects({
+            sourceState: as,
+            targetState: ds,
+            trigger: 'onDeath',
+            sourceCard: a.card,
+            sourceType: 'creature',
+            sourceIndex: attackerIndex,
+            engineContext
+          });
+          as = out.playerState;
+          ds = out.opponentState;
+        } else {
+          newCreatures[attackerIndex] = { ...a, currentCH: nextCH };
+          as.creatures = newCreatures;
+        }
+      }
+    }
+
+    consumeAttack();
+
+    as = applyPassiveEffects(as);
+    ds = applyPassiveEffects(ds);
+    return { attackerState: as, defenderState: ds, blocked: false, message: null };
   }
 
-  return { attackerState, defenderState };
+  if (!targetDefender) return earlyOut('Invalid target.');
+
+  const defenderAP = targetDefender.currentAP ?? 0;
+  targetDefender.currentCH -= attackerAP;
+
+  // Recoil / retaliation
+  if (isControllerAttack) {
+    const newControllers = [...as.controllers];
+    const aCtrl = newControllers[attackerIndex];
+    if (aCtrl) {
+      const immuneToRecoil = aCtrl.statusEffects?.includes('Indestructible') ||
+        aCtrl.statusEffects?.includes('ImmuneToRecoil');
+      const nextCH = immuneToRecoil ? aCtrl.currentCH : aCtrl.currentCH - defenderAP;
+
+      if (!immuneToRecoil && nextCH <= 0) {
+        newControllers[attackerIndex] = null;
+        as.controllers = newControllers;
+        as = setNextActiveController(as);
+      } else {
+        newControllers[attackerIndex] = { ...aCtrl, currentCH: nextCH };
+        as.controllers = newControllers;
+      }
+    }
+  } else {
+    const immuneToRecoil = attacker.statusEffects?.includes('Indestructible') ||
+      attacker.statusEffects?.includes('ImmuneToRecoil');
+    if (!immuneToRecoil) attacker.currentCH -= defenderAP;
+  }
+
+  // Defender dies
+  if (targetDefender.currentCH <= 0) {
+    if (targetDefender.originalOwner === 'attacker') {
+      as.graveyard = [...(as.graveyard || []), targetDefender.card];
+    } else {
+      ds.graveyard = [...(ds.graveyard || []), targetDefender.card];
+    }
+
+    const newDefCreatures = [...ds.creatures];
+    newDefCreatures[defenderIndex] = null;
+    ds.creatures = newDefCreatures;
+
+    // Defender onDeath
+    {
+      const out = resolveTriggeredEffects({
+        sourceState: ds,
+        targetState: as,
+        trigger: 'onDeath',
+        sourceCard: targetDefender.card,
+        sourceType: 'creature',
+        sourceIndex: defenderIndex,
+        engineContext
+      });
+      ds = out.playerState;
+      as = out.opponentState;
+    }
+
+    // Attacker onKill (creatures only)
+    if (!isControllerAttack) {
+      const out = resolveTriggeredEffects({
+        sourceState: as,
+        targetState: ds,
+        trigger: 'onKill',
+        sourceCard: attacker.card,
+        sourceType: 'creature',
+        sourceIndex: attackerIndex,
+        targetInfo: { type: 'creature', index: defenderIndex },
+        engineContext
+      });
+      as = out.playerState;
+      ds = out.opponentState;
+    }
+  } else {
+    const newDefCreatures = [...ds.creatures];
+    newDefCreatures[defenderIndex] = { ...targetDefender };
+    ds.creatures = newDefCreatures;
+  }
+
+  // Attacker dies (creatures only)
+  if (!isControllerAttack) {
+    const immuneToRecoil = attacker.statusEffects?.includes('Indestructible') ||
+      attacker.statusEffects?.includes('ImmuneToRecoil');
+
+    if (!immuneToRecoil && attacker.currentCH <= 0) {
+      if (attacker.originalOwner === 'opponent') {
+        ds.graveyard = [...(ds.graveyard || []), attacker.card];
+      } else {
+        as.graveyard = [...(as.graveyard || []), attacker.card];
+      }
+
+      const newAtkCreatures = [...as.creatures];
+      newAtkCreatures[attackerIndex] = null;
+      as.creatures = newAtkCreatures;
+
+      const out = resolveTriggeredEffects({
+        sourceState: as,
+        targetState: ds,
+        trigger: 'onDeath',
+        sourceCard: attacker.card,
+        sourceType: 'creature',
+        sourceIndex: attackerIndex,
+        engineContext
+      });
+      as = out.playerState;
+      ds = out.opponentState;
+    } else {
+      const newAtkCreatures = [...as.creatures];
+      newAtkCreatures[attackerIndex] = { ...attacker };
+      as.creatures = newAtkCreatures;
+    }
+  }
+
+  consumeAttack();
+
+  as = applyPassiveEffects(as);
+  ds = applyPassiveEffects(ds);
+  return { attackerState: as, defenderState: ds, blocked: false, message: null };
 }
+
+
+// ----------------------------
+// Passives
+// ----------------------------
 
 export function applyPassiveEffects(playerState) {
-  const activeController = playerState.controllers.find(c => c && c.isActive);
-  if (!activeController) return playerState;
+  if (!playerState) return playerState;
 
-  const newCreatures = playerState.creatures.map(c => {
+  const ps = deepClone(playerState);
+  const activeController = getActiveController(ps);
+  if (!activeController) return ps;
+
+  // ----------------------------
+  // Recompute stats from a clean baseline WITHOUT healing or refreshing attacks.
+  // We preserve:
+  // - damage taken (maxCH - currentCH)
+  // - remaining attacks for this turn (attacksRemaining)
+  // ----------------------------
+
+  let creatures = (ps.creatures || []).map(c => {
     if (!c) return null;
-    
-    let bonusAP = 0;
-    
-    // Draco Alec passive: All Fire creatures gain +1 AP
-    if (activeController.card.name === 'Draco Alec' && c.card.element === 'fire') {
-      bonusAP += 1;
-    }
-    
-    // Supreme Fire Spirit passive: All Fire creatures gain +1 AP
-    if (activeController.card.name === 'Supreme Fire Spirit' && c.card.element === 'fire') {
-      bonusAP += 1;
-    }
-    
-    // Draco Synergy: If Draco Alec is controller, Draco gains +2 AP
-    if (c.card.name === 'Draco' && activeController.card.name === 'Draco Alec') {
-      bonusAP += 2;
-    }
-    
-    // Emperors Fire Dragon Boss: If Flame Emperor active, can attack twice
-    if (c.card.name === 'Emperors Fire Dragon' && activeController.card.name === 'Flame Emperor') {
-      bonusAP += 0; // Visual indicator, attacks handled separately
-    }
 
-    // Wind Ronin: Naturally attacks twice
-    if (c.card.name === 'Wind Ronin') {
-      c.attacksRemaining = 2;
-    }
-    
-    // Apply artifact bonuses
-    const equippedArtifacts = c.equippedArtifacts || [];
-    equippedArtifacts.forEach(artifact => {
-      if (artifact.card.name === "Draco's Slayer") {
-        if (c.card.name === 'Draco') {
-          bonusAP += 3;
-        }
-      } else if (artifact.card.name === 'Katana of Fate') {
-        bonusAP += c.card.element === 'blood' ? 2 : 1;
-      } else if (artifact.card.name === 'Cursed Flame Sword') {
-        bonusAP += 3;
-      } else if (artifact.card.name === 'Flame Orb') {
-        // Overload: Double the Fire creature's AP
-        if (c.card.element === 'fire') {
-          bonusAP = c.card.ap; // This doubles the base AP (base + base = double)
-          c.markedForMeltdown = true; // Mark for destruction at end phase
-        }
-      }
-    });
-    
+    const prevMax = Number(c.maxCH ?? c.card.ch ?? 0);
+    const prevCur = Number(c.currentCH ?? c.card.ch ?? 0);
+    const damageTaken = Math.max(0, prevMax - prevCur);
+
+    const baseMax = Number(c.card.ch ?? 0);
+    const baseAP = Number(c.card.ap ?? 0);
+
+    const nextMax = baseMax;
+    const nextCur = Math.max(0, nextMax - damageTaken);
+
     return {
       ...c,
-      currentAP: c.card.ap + bonusAP
+      currentAP: baseAP,
+      maxCH: nextMax,
+      currentCH: nextCur
+      // attacksRemaining preserved for now
     };
   });
 
-  return {
-    ...playerState,
-    creatures: newCreatures
-  };
-}
+  const auraAbilities = [];
 
-export function startNewTurn(playerState) {
-  // Clear spell restrictions
-  delete playerState.cannotPlaySpells;
-  
-  // Reset creatures and destroy marked ones
-  const newCreatures = playerState.creatures.map(c => {
-    if (!c) return null;
-    
-    // Clear status effects that last 1 turn
-    const statusEffects = (c.statusEffects || []).filter(effect => {
-      // Remove Freeze at turn start
-      return effect !== 'Freeze';
-    });
-    
-    // Enflamed Explosion: Destroy and deal damage to controller
-    if (c.markedForExplosion) {
-      const explosionDamage = c.explosionDamage || c.currentCH;
-      playerState.graveyard = [...playerState.graveyard, c.card];
-      
-      // Deal damage to the controller who owns this creature
-      const activeCtrl = playerState.controllers.find(ctrl => ctrl && ctrl.isActive);
-      if (activeCtrl) {
-        const ctrlIdx = playerState.controllers.indexOf(activeCtrl);
-        playerState.controllers[ctrlIdx] = {
-          ...activeCtrl,
-          currentCH: activeCtrl.currentCH - explosionDamage
-        };
-        
-        if (playerState.controllers[ctrlIdx].currentCH <= 0) {
-          playerState.controllers[ctrlIdx] = null;
-          const nextCtrl = playerState.controllers.find(c => c !== null);
-          if (nextCtrl) {
-            const nextIndex = playerState.controllers.indexOf(nextCtrl);
-            playerState.controllers[nextIndex] = { ...nextCtrl, isActive: true };
-          }
-        }
-      }
-      return null;
-    }
-    
-    // Flame Orb Meltdown: Destroy creature and deal 2 damage to all others
-    if (c.markedForMeltdown) {
-      playerState.graveyard = [...playerState.graveyard, c.card];
-      // Deal 2 damage to all other creatures
-      playerState.creatures.forEach((other, idx) => {
-        if (other && other !== c) {
-          other.currentCH -= 2;
-          if (other.currentCH <= 0) {
-            playerState.graveyard = [...playerState.graveyard, other.card];
-            playerState.creatures[idx] = null;
-          }
-        }
+  // Controller passives
+  const ctrlPassives = getAbilitiesForTrigger(activeController.card, 'passive');
+  for (const ab of ctrlPassives) {
+    if (ab.action === 'aura' || ab.action === 'modifyStats') {
+      auraAbilities.push({
+        ...ab,
+        sourceType: 'controller',
+        params: ab.params ? { ...ab.params, element: ab.params.element?.toLowerCase() } : {}
       });
-      return null;
     }
-    
-    // Destroy creatures marked for destruction
-    if (c.markedForDestruction) {
-      playerState.graveyard = [...playerState.graveyard, c.card];
-      return null;
+  }
+
+  // Creature passives (auras / modifyStats)
+  (creatures || []).forEach((c, idx) => {
+    if (!c) return;
+    const passives = getAbilitiesForTrigger(c.card, 'passive');
+    for (const ab of passives) {
+      if (ab.action === 'aura' || ab.action === 'modifyStats') {
+        auraAbilities.push({ ...ab, sourceType: 'creature', sourceIndex: idx });
+      }
     }
-    
-    // Handle Draco's Slayer timer
-    const newEquippedArtifacts = (c.equippedArtifacts || []).filter(artifact => {
-      if (artifact.card.name === "Draco's Slayer" && c.card.name === 'Draco') {
-        artifact.turnsActive = (artifact.turnsActive || 0) + 1;
-        if (artifact.turnsActive >= 2) {
-          // Destroy both artifact and Draco
-          playerState.graveyard = [...playerState.graveyard, artifact.card, c.card];
-          return false; // Remove artifact
+  });
+
+  // Equipped artifact passives (auras / modifyStats)
+  (creatures || []).forEach((c, idx) => {
+    if (!c || !(c.equippedArtifacts || []).length) return;
+    c.equippedArtifacts.forEach(inst => {
+      const passives = getAbilitiesForTrigger(inst.card, 'passive');
+      for (const ab of passives) {
+        if (ab.action === 'aura' || ab.action === 'modifyStats') {
+          auraAbilities.push({ ...ab, sourceType: 'artifact', sourceIndex: idx });
         }
       }
-      return true; // Keep artifact
     });
-    
-    // If Draco's Slayer destroyed Draco, return null
-    if (c.card.name === 'Draco' && newEquippedArtifacts.length < (c.equippedArtifacts || []).length) {
-      const hadDracoSlayer = (c.equippedArtifacts || []).some(a => a.card.name === "Draco's Slayer");
-      if (hadDracoSlayer && newEquippedArtifacts.every(a => a.card.name !== "Draco's Slayer")) {
-        return null;
+  });
+
+  // Apply auras / modifyStats
+  creatures = (creatures || []).map(c => {
+    if (!c) return null;
+    let updated = { ...c };
+
+    for (const aura of auraAbilities) {
+      const params = aura.params || {};
+      const target = aura.target || {};
+
+      if (params.element && updated.card.element !== params.element) continue;
+      if (target.type === 'ally_creature' && updated.card.card_type !== 'creature') continue;
+
+      if (aura.action === 'modifyStats') {
+        if (params.stat === 'ap' && params.amount) updated.currentAP += params.amount;
+        if (params.stat === 'ch' && params.amount) {
+          updated.maxCH += params.amount;
+          updated.currentCH += params.amount;
+        }
+      }
+
+      if (params.apBonus) updated.currentAP += params.apBonus;
+      if (params.chBonus) {
+        updated.maxCH += params.chBonus;
+        updated.currentCH += params.chBonus;
+      }
+
+      // Haste-like auras should not "unlock" turn 1/2 attacks.
+      // They only loosen per-unit restrictions. Global lock is enforced in performAttack/startNewTurn.
+      if (params.haste) updated.canAttack = true;
+    }
+
+    // Clamp after buffs
+    updated.currentCH = Math.max(0, Math.min(updated.currentCH, updated.maxCH));
+    return updated;
+  });
+
+  // Controllers: baseline recompute without healing
+  ps.controllers = (ps.controllers || []).map(ctrl => {
+    if (!ctrl) return null;
+
+    const prevMax = Number(ctrl.maxCH ?? ctrl.card.ch ?? 0);
+    const prevCur = Number(ctrl.currentCH ?? ctrl.card.ch ?? 0);
+    const damageTaken = Math.max(0, prevMax - prevCur);
+
+    const baseMax = Number(ctrl.card.ch ?? 0);
+    const baseAP = Number(ctrl.card.ap ?? 0);
+
+    let updated = {
+      ...ctrl,
+      currentAP: baseAP,
+      maxCH: baseMax,
+      currentCH: Math.max(0, baseMax - damageTaken)
+      // attacksRemaining preserved for now
+    };
+
+    for (const aura of auraAbilities) {
+      const params = aura.params || {};
+      const target = aura.target || {};
+
+      if (target.type === 'ally_creature') continue;
+
+      if (aura.action === 'modifyStats') {
+        if (params.stat === 'ap' && params.amount) updated.currentAP += params.amount;
+        if (params.stat === 'ch' && params.amount) {
+          updated.maxCH += params.amount;
+          updated.currentCH += params.amount;
+        }
+      }
+
+      if (params.apBonus) updated.currentAP += params.apBonus;
+      if (params.chBonus) {
+        updated.maxCH += params.chBonus;
+        updated.currentCH += params.chBonus;
       }
     }
-    
-    // Set attacks remaining based on card abilities
-    let attacksRemaining = 1;
-    
-    // Wind Ronin naturally attacks twice
-    if (c.card.name === 'Wind Ronin') {
-      attacksRemaining = 2;
+
+    updated.currentCH = Math.max(0, Math.min(updated.currentCH, updated.maxCH));
+    return updated;
+  });
+
+  // Apply non-aura passives (double strike etc) and clamp remaining attacks.
+  creatures = (creatures || []).map(c => {
+    if (!c) return null;
+
+    let allowedAttacks = 1;
+
+    const passives = getAbilitiesForTrigger(c.card, 'passive');
+    for (const ab of passives) {
+      if (ab.action === 'aura') continue;
+      const params = ab.params || {};
+
+      if (params.doubleStrike || params.attacksRemaining === 2) {
+        allowedAttacks = Math.max(allowedAttacks, 2);
+      }
+      if (params.cannotAttack) {
+        c.canAttack = false;
+      }
     }
-    
-    // Emperors Fire Dragon with Flame Emperor controller
-    const activeController = playerState.controllers.find(ctrl => ctrl && ctrl.isActive);
-    if (c.card.name === 'Emperors Fire Dragon' && activeController?.card.name === 'Flame Emperor') {
-      attacksRemaining = 2;
-    }
-    
+
+    const remaining = c.attacksRemaining;
     return {
       ...c,
-      canAttack: true,
-      hasAttacked: false,
-      attacksRemaining: attacksRemaining,
-      equippedArtifacts: newEquippedArtifacts,
-      statusEffects: statusEffects
+      attacksRemaining: remaining === undefined || remaining === null
+        ? allowedAttacks
+        : Math.min(Number(remaining), allowedAttacks)
     };
   });
 
-  const newState = {
-    ...playerState,
-    shards: playerState.shards + 1,
-    creatures: newCreatures
-  };
+  ps.creatures = creatures;
 
-  // Reapply passive effects
-  return applyPassiveEffects(newState);
-}
+  // Apply equipped artifact bonuses (non-aura)
+  ps.creatures = (ps.creatures || []).map(c => {
+    if (!c) return null;
 
-export function checkWinCondition(playerState) {
-  return playerState.controllers.every(c => c === null);
-}
+    const equipped = c.equippedArtifacts || [];
+    let apBonus = 0;
+    let chBonus = 0;
 
-export function activateControllerAbility(playerState, opponentState, abilityType, targetIndex = null) {
-  const activeController = playerState.controllers.find(c => c && c.isActive);
-  if (!activeController) return { playerState, opponentState };
+    for (const inst of equipped) {
+      const passives = getAbilitiesForTrigger(inst.card, 'passive');
+      for (const ab of passives) {
+        const params = ab.params || {};
 
-  const card = activeController.card;
-  
-  // Draco Alec: Target 1 Fire creature to attack twice, destroy at end phase
-  if (card.name === 'Draco Alec' && abilityType === 'active') {
-    const target = playerState.creatures[targetIndex];
-    if (!target || target.card.element !== 'fire') return { playerState, opponentState };
-    
-    const newCreatures = [...playerState.creatures];
-    newCreatures[targetIndex] = {
-      ...target,
-      attacksRemaining: 2,
-      markedForDestruction: true
-    };
-    
+        if (params.apBonus) apBonus += params.apBonus;
+        if (params.bloodBonus && c.card.element === 'blood') apBonus += params.bloodBonus;
+        if (params.chBonus) chBonus += params.chBonus;
+
+        if (ab.action === 'modifyStats') {
+          if (params.stat === 'ap' && params.amount) apBonus += params.amount;
+          if (params.stat === 'ch' && params.amount) chBonus += params.amount;
+        }
+      }
+    }
+
+    const nextMax = c.maxCH + chBonus;
+    const nextCur = Math.max(0, Math.min(c.currentCH + chBonus, nextMax));
+
+    return { ...c, currentAP: c.currentAP + apBonus, maxCH: nextMax, currentCH: nextCur };
+  });
+
+  ps.controllers = (ps.controllers || []).map(ctrl => {
+    if (!ctrl) return null;
+
+    let apBonus = 0;
+    let chBonus = 0;
+    const equipped = ctrl.equippedArtifacts || [];
+
+    for (const inst of equipped) {
+      const passives = getAbilitiesForTrigger(inst.card, 'passive');
+      for (const ab of passives) {
+        const params = ab.params || {};
+
+        if (params.apBonus) apBonus += params.apBonus;
+        if (params.chBonus) chBonus += params.chBonus;
+
+        if (ab.action === 'modifyStats') {
+          if (params.stat === 'ap' && params.amount) apBonus += params.amount;
+          if (params.stat === 'ch' && params.amount) chBonus += params.amount;
+        }
+      }
+    }
+
+    const nextMax = Number(ctrl.maxCH ?? ctrl.card.ch ?? 0) + chBonus;
+    const nextCur = Math.max(0, Math.min(Number(ctrl.currentCH ?? 0) + chBonus, nextMax));
+
     return {
-      playerState: { ...playerState, creatures: newCreatures },
-      opponentState
+      ...ctrl,
+      currentAP: (ctrl.card.ap || 0) + apBonus,
+      maxCH: nextMax,
+      currentCH: nextCur
     };
+  });
+
+  return ps;
+}
+
+
+// ----------------------------
+// Turn progression
+// ----------------------------
+
+export function startNewTurn(playerState, opponentState = null, currentTurnNumber = 1, engineContext = null) {
+  let ps = deepClone(playerState);
+  let os = opponentState ? deepClone(opponentState) : null;
+
+  // Tick artifacts/spells
+  ps.artifacts = (ps.artifacts || []).map(a => {
+    if (!a) return null;
+    return { ...a, turnsActive: (a.turnsActive || 0) + 1 };
+  });
+
+  // Trigger startOfTurn on controller + creatures
+  const activeCtrl = getActiveController(ps);
+  if (activeCtrl) {
+    const out = resolveTriggeredEffects({
+      sourceState: ps,
+      targetState: os,
+      trigger: 'startOfTurn',
+      sourceCard: activeCtrl.card,
+      sourceType: 'controller',
+      sourceIndex: ps.controllers.indexOf(activeCtrl),
+      engineContext
+    });
+    ps = out.playerState;
+    os = out.opponentState;
   }
-  
-  // Flame Emperor Passive: Pay 2 Shards to draw 1 card
-  if (card.name === 'Flame Emperor' && abilityType === 'passive') {
-    if (playerState.shards < 2 || playerState.deck.length === 0) {
+
+  (ps.creatures || []).forEach((c, idx) => {
+    if (!c) return;
+    const out = resolveTriggeredEffects({
+      sourceState: ps,
+      targetState: os,
+      trigger: 'startOfTurn',
+      sourceCard: c.card,
+      sourceType: 'creature',
+      sourceIndex: idx,
+      engineContext
+    });
+    ps = out.playerState;
+    os = out.opponentState;
+  });
+
+  // Reset attack state + re-evaluate "canAttack" based on (1) global lock and (2) summoning sickness.
+  ps.controllers = (ps.controllers || []).map(c => {
+    if (!c) return null;
+
+    const canAttackNow =
+      Number(currentTurnNumber ?? 1) >= ATTACKS_LOCKED_UNTIL_TURN &&
+      canAttackBySummonTurn(c.summonedTurn, currentTurnNumber);
+
+    return {
+      ...c,
+      hasAttacked: false,
+      attacksRemaining: undefined,
+      canAttack: canAttackNow
+    };
+  });
+
+  ps.creatures = (ps.creatures || []).map(c => {
+    if (!c) return null;
+
+    let currentAP = c.currentAP;
+    if (c.temporaryAP) currentAP -= c.temporaryAP;
+    if (c.temporaryAPReduction) currentAP += c.temporaryAPReduction;
+
+    const statusEffects = (c.statusEffects || []).filter(e => e !== 'Freeze');
+
+    const canAttackNow =
+      Number(currentTurnNumber ?? 1) >= ATTACKS_LOCKED_UNTIL_TURN &&
+      canAttackBySummonTurn(c.summonedTurn, currentTurnNumber) &&
+      !statusEffects.includes('Freeze') &&
+      !statusEffects.includes('Bind');
+
+    return {
+      ...c,
+      currentAP,
+      canAttack: canAttackNow,
+      hasAttacked: false,
+      attacksRemaining: undefined,
+      statusEffects,
+      temporaryAP: undefined,
+      temporaryAPReduction: undefined
+    };
+  });
+
+  // IMPORTANT:
+  // Do NOT shard-tick here. Your phase flow already handles Energy -> gain shard.
+  // This prevents double shard gains when turn changes.
+
+  ps = applyPassiveEffects(ps);
+  if (os) os = applyPassiveEffects(os);
+
+  return { playerState: ps, opponentState: os };
+}
+
+// ----------------------------
+// Win condition
+// ----------------------------
+
+// Loss is when you have zero controllers remaining on the field.
+// Also: nobody can win on turn 1 or 2 (prevents early-effect edge cases).
+export function checkWinCondition(playerState, currentTurnNumber = 1) {
+  if (Number(currentTurnNumber ?? 1) < ATTACKS_LOCKED_UNTIL_TURN) return false;
+  return (playerState.controllers || []).every(c => c === null);
+}
+
+// ----------------------------
+// Activated ability entrypoint (generic)
+// ----------------------------
+
+export function activateControllerAbility(playerState, opponentState, abilityType, targetInfo = null) {
+  const ps = deepClone(playerState);
+  const os = opponentState ? deepClone(opponentState) : null;
+
+  const active = getActiveController(ps);
+  if (!active) return { playerState, opponentState };
+
+  const trigger = abilityType === 'active' ? 'active' : 'passive';
+  const activeIndex = ps.controllers.indexOf(active);
+
+  const abilities = getAbilitiesForTrigger(active.card, trigger);
+
+  for (const ab of abilities) {
+    const cost = ab.cost || {};
+
+    if (cost.shards && ps.shards < cost.shards) {
       return { playerState, opponentState };
     }
-    
-    const drawnState = drawCard(playerState);
-    return {
-      playerState: { ...drawnState, shards: drawnState.shards - 2 },
-      opponentState
-    };
-  }
-  
-  // Flame Emperor Active: Pay 2 Shards, deal 2 damage to enemy Controller
-  if (card.name === 'Flame Emperor' && abilityType === 'active') {
-    if (playerState.shards < 2) return { playerState, opponentState };
-    
-    const enemyController = opponentState.controllers.find(c => c && c.isActive);
-    if (!enemyController) return { playerState, opponentState };
-    
-    const ctrlIndex = opponentState.controllers.indexOf(enemyController);
-    const newControllers = [...opponentState.controllers];
-    newControllers[ctrlIndex] = {
-      ...enemyController,
-      currentCH: Math.max(0, enemyController.currentCH - 2)
-    };
-    
-    if (newControllers[ctrlIndex].currentCH <= 0) {
-      newControllers[ctrlIndex] = null;
-      const nextCtrl = newControllers.find(c => c !== null);
-      if (nextCtrl) {
-        const nextIndex = newControllers.indexOf(nextCtrl);
-        newControllers[nextIndex] = { ...nextCtrl, isActive: true };
-      }
+
+    if (cost.ch && active.currentCH < cost.ch) {
+      return { playerState, opponentState };
     }
-    
-    return {
-      playerState: { ...playerState, shards: playerState.shards - 2 },
-      opponentState: { ...opponentState, controllers: newControllers }
-    };
   }
-  
-  // Supreme Fire Spirit: Pay 3 Shards to destroy enemy creature with 4 CH or less
-  if (card.name === 'Supreme Fire Spirit' && abilityType === 'active') {
-    if (playerState.shards < 3) return { playerState, opponentState };
-    
-    const target = opponentState.creatures[targetIndex];
-    if (!target || target.currentCH > 4) return { playerState, opponentState };
-    
-    const newOpponentCreatures = [...opponentState.creatures];
-    opponentState.graveyard = [...opponentState.graveyard, target.card];
-    newOpponentCreatures[targetIndex] = null;
-    
-    return {
-      playerState: { ...playerState, shards: playerState.shards - 3 },
-      opponentState: { ...opponentState, creatures: newOpponentCreatures }
-    };
-  }
-  
-  return { playerState, opponentState };
+
+  const out = resolveTriggeredEffects({
+    sourceState: ps,
+    targetState: os,
+    trigger,
+    sourceCard: active.card,
+    sourceType: 'controller',
+    sourceIndex: activeIndex,
+    targetInfo
+  });
+
+  const finalPS = applyPassiveEffects(out.playerState);
+  const finalOS = out.opponentState ? applyPassiveEffects(out.opponentState) : out.opponentState;
+
+  return { playerState: finalPS, opponentState: finalOS };
 }
 
-export function activateCreatureAbility(playerState, opponentState, creatureIndex, targetIndex = null) {
-  const creature = playerState.creatures[creatureIndex];
+export function activateCreatureAbility(playerState, opponentState, creatureIndex, abilityType, targetInfo = null) {
+  const ps = deepClone(playerState);
+  const os = opponentState ? deepClone(opponentState) : null;
+
+  const creature = ps.creatures[creatureIndex];
   if (!creature) return { playerState, opponentState };
-  
-  // Emperors Fire Dragon: Pay 2 Shards to deal 3 damage to enemy creature
-  if (creature.card.name === 'Emperors Fire Dragon') {
-    if (playerState.shards < 2) return { playerState, opponentState };
-    
-    const target = opponentState.creatures[targetIndex];
-    if (!target) return { playerState, opponentState };
-    
-    const newOpponentCreatures = [...opponentState.creatures];
-    target.currentCH -= 3;
-    
-    if (target.currentCH <= 0) {
-      opponentState.graveyard = [...opponentState.graveyard, target.card];
-      newOpponentCreatures[targetIndex] = null;
-    } else {
-      newOpponentCreatures[targetIndex] = target;
+
+  const trigger = abilityType === 'active' ? 'active' : 'passive';
+
+  const abilities = getAbilitiesForTrigger(creature.card, trigger);
+
+  for (const ab of abilities) {
+    const cost = ab.cost || {};
+
+    if (cost.shards && ps.shards < cost.shards) {
+      return { playerState, opponentState };
     }
-    
-    return {
-      playerState: { ...playerState, shards: playerState.shards - 2 },
-      opponentState: { ...opponentState, creatures: newOpponentCreatures }
-    };
-  }
-  
-  // Flame Warlock: Sacrifice creature to deal 3 damage to enemy creature
-  if (creature.card.name === 'Flame Warlock') {
-    const target = opponentState.creatures[targetIndex];
-    if (!target) return { playerState, opponentState };
-    
-    const newPlayerCreatures = [...playerState.creatures];
-    const newOpponentCreatures = [...opponentState.creatures];
-    
-    // Sacrifice the warlock
-    playerState.graveyard = [...playerState.graveyard, creature.card];
-    newPlayerCreatures[creatureIndex] = null;
-    
-    // Deal 3 damage
-    target.currentCH -= 3;
-    if (target.currentCH <= 0) {
-      opponentState.graveyard = [...opponentState.graveyard, target.card];
-      newOpponentCreatures[targetIndex] = null;
-    } else {
-      newOpponentCreatures[targetIndex] = target;
+
+    if (cost.ch && creature.currentCH < cost.ch) {
+      return { playerState, opponentState };
     }
-    
-    return {
-      playerState: { ...playerState, creatures: newPlayerCreatures },
-      opponentState: { ...opponentState, creatures: newOpponentCreatures }
-    };
   }
-  
-  return { playerState, opponentState };
+
+  const out = resolveTriggeredEffects({
+    sourceState: ps,
+    targetState: os,
+    trigger,
+    sourceCard: creature.card,
+    sourceType: 'creature',
+    sourceIndex: creatureIndex,
+    targetInfo
+  });
+
+  const finalPS = applyPassiveEffects(out.playerState);
+  const finalOS = out.opponentState ? applyPassiveEffects(out.opponentState) : out.opponentState;
+
+  return { playerState: finalPS, opponentState: finalOS };
 }
 
-export function applyStatusEffect(creature, effect) {
-  const statusEffects = [...(creature.statusEffects || [])];
-  
-  if (!statusEffects.includes(effect)) {
-    statusEffects.push(effect);
+export function activateArtifactAbility(playerState, opponentState, artifactIndex, abilityType, targetInfo = null) {
+  const ps = deepClone(playerState);
+  const os = opponentState ? deepClone(opponentState) : null;
+
+  const artifact = ps.artifacts[artifactIndex];
+  if (!artifact) return { playerState, opponentState };
+
+  const trigger = abilityType === 'active' ? 'active' : 'passive';
+
+  const abilities = getAbilitiesForTrigger(artifact.card, trigger);
+
+  for (const ab of abilities) {
+    const cost = ab.cost || {};
+
+    if (cost.shards && ps.shards < cost.shards) {
+      return { playerState, opponentState };
+    }
   }
 
-  const updates = { statusEffects };
+  const out = resolveTriggeredEffects({
+    sourceState: ps,
+    targetState: os,
+    trigger,
+    sourceCard: artifact.card,
+    sourceType: 'artifact',
+    sourceIndex: artifactIndex,
+    targetInfo
+  });
 
-  // Apply effect
-  switch (effect) {
-    case 'Freeze':
-    case 'Bind':
-      updates.canAttack = false;
-      break;
-    case 'Paralyze':
-      updates.skipNextAction = true;
-      break;
+  const finalPS = applyPassiveEffects(out.playerState);
+  const finalOS = out.opponentState ? applyPassiveEffects(out.opponentState) : out.opponentState;
+
+  return { playerState: finalPS, opponentState: finalOS };
+}
+
+// ----------------------------
+// Phase progression (used by TCG.jsx)
+// ----------------------------
+// Phases expected by UI: draw -> energy -> main -> combat -> end turn
+//
+// IMPORTANT DESIGN:
+// - UI owns gameState, including isMyTurn and the fixed slots:
+//     gameState.playerState   (human player)
+//     gameState.opponentState (CPU / opponent)
+// - Engine must NEVER swap those slots.
+// - endPhase uses gameState.isMyTurn to decide which sub-state is currently active.
+
+export function endPhase(gameState) {
+  if (!gameState) return gameState;
+
+  const phase = gameState.phase || "draw";
+  const isPlayerTurn = !!gameState.isMyTurn;
+
+  const playerState = gameState.playerState;
+  const opponentState = gameState.opponentState;
+
+  const activeState = isPlayerTurn ? playerState : opponentState;
+
+  // Helper to write back only the active side
+  const writeActive = (nextActive) => {
+    return {
+      playerState: isPlayerTurn ? nextActive : playerState,
+      opponentState: isPlayerTurn ? opponentState : nextActive
+    };
+  };
+
+  // DRAW -> draw 1 card (active side)
+  if (phase === "draw") {
+    const nextActive = drawCard(activeState);
+    const out = writeActive(nextActive);
+    return {
+      ...gameState,
+      phase: "energy",
+      ...out
+    };
   }
 
-  return { ...creature, ...updates };
+  // ENERGY -> gain 1 shard (active side) - NOT CAPPED
+  if (phase === "energy") {
+    const shards = Number(activeState?.shards ?? 0);
+    const nextActive = {
+      ...activeState,
+      shards: shards + 1
+    };
+    const out = writeActive(nextActive);
+    return {
+      ...gameState,
+      phase: "main",
+      ...out
+    };
+  }
+
+  // MAIN -> COMBAT
+  if (phase === "main") {
+    return {
+      ...gameState,
+      phase: "combat",
+    };
+  }
+
+  // COMBAT -> end turn:
+  // Flip isMyTurn, startNewTurn for the NEW active side, without swapping slots.
+  const nextTurnNumber = Number(gameState.turnNumber ?? 1) + 1;
+
+  if (isPlayerTurn) {
+    // Opponent will start their turn now
+    const out = startNewTurn(opponentState, playerState, nextTurnNumber);
+    return {
+      ...gameState,
+      isMyTurn: false,
+      phase: "draw",
+      turnNumber: nextTurnNumber,
+      playerState: out.opponentState ?? playerState,
+      opponentState: out.playerState,
+    };
+  }
+
+  // Player will start their turn now
+  const out = startNewTurn(playerState, opponentState, nextTurnNumber);
+  return {
+    ...gameState,
+    isMyTurn: true,
+    phase: "draw",
+    turnNumber: nextTurnNumber,
+    playerState: out.playerState,
+    opponentState: out.opponentState ?? opponentState,
+  };
 }

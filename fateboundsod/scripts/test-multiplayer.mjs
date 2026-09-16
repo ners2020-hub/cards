@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import { startMatch, applyAction, playerView, validateDeck, BALANCE_VERSION } from '../src/practice/multiplayer.js';
+import { cards, performMove, runAITurn, outcome } from '../src/practice/rulesEngine.js';
+const P='playerState', E='opponentState';
+const deck = {element:'fire',controller:'Flame Emperor'};
+const card = name => structuredClone(cards.find(c=>c.name===name));
+let count=0;
+function test(name, run) { run(); console.log('PASS',name); count++; }
+const fixture=()=>startMatch(deck,deck,1234);
+test('fixed decks and controllers validate',()=>{assert.throws(()=>validateDeck({element:'fire',controller:'Neptune'}));assert.throws(()=>validateDeck({element:'bad'}));assert.equal(fixture().balanceVersion,BALANCE_VERSION);});
+test('seat two sees own hand and turn perspective',()=>{const g=fixture();const v=playerView(g,E);assert.deepEqual(v.playerState.hand.map(c=>c.id),g[E].hand.map(c=>c.id));assert.equal(v.isMyTurn,false);assert.equal(v.playerState.controllers[0].side,P);assert.equal(v.opponentState.controllers[0].side,E);});
+test('private state and opaque flags never leave the server',()=>{const g=fixture();g[E].hand=[{id:'SECRET_HAND'}];g[E].deck=[{id:'SECRET_DECK'}];g[P].deck=[{id:'OWN_DECK_ORDER'}];g.log=['SECRET_LOG'];g[P].controllers[0].flags.secret='SECRET_FLAG';const v=JSON.stringify(playerView(g,P));for(const secret of ['SECRET_HAND','SECRET_DECK','OWN_DECK_ORDER','SECRET_LOG','SECRET_FLAG','"seed"'])assert.ok(!v.includes(secret),secret);assert.equal(playerView(g,P).opponentState.handCount,1);});
+test('reject forged free plays, auto choices, turn and owner overrides',()=>{const g=fixture();for(const field of ['free','auto','isMyTurn','side','choices','targetOverride'])assert.throws(()=>applyAction(g,P,{type:'play',index:0,[field]:true}));assert.throws(()=>applyAction(g,E,{type:'advance'}));assert.throws(()=>applyAction(g,'other',{type:'advance'}));});
+test('costs and phase validated without mutating authoritative input',()=>{const g=fixture();const before=JSON.stringify(g);assert.throws(()=>applyAction(g,P,{type:'play',index:0}));assert.equal(JSON.stringify(g),before);g.phase='main';g[P].shards=0;assert.throws(()=>applyAction(g,P,{type:'play',index:0}));});
+test('pending choices stay server-held and belong to the correct player',()=>{let g=fixture();g.phase='main';g[P].hand=[card('Burning Blast')];g=applyAction(g,P,{type:'play',index:0});assert.ok(g.pendingChoice);const owner=g.pendingChoice.side;assert.equal(owner,P);assert.equal(playerView(g,E).pendingChoice,undefined);assert.equal(playerView(g,E).waitingForChoice,true);assert.equal(playerView(g,P).pendingChoice.move,undefined);assert.throws(()=>applyAction(g,E,{type:'choice',id:g.pendingChoice.options[0].id}));assert.throws(()=>applyAction(g,P,{type:'choice',id:'forged'}));assert.throws(()=>applyAction(g,P,{type:'advance'}));g=applyAction(g,P,{type:'choice',id:g.pendingChoice.options[0].id});assert.equal(g.pendingChoice,undefined);assert.equal(g[P].hand.length,0);});
+test('Ink Cloud is a defender choice for either seat, never AI-controlled',()=>{for(const attacker of [P,E]){let g=fixture();g.turnNumber=5;g.isMyTurn=attacker===P;g.phase='combat';const defender=attacker===P?E:P;g[defender].reaction={name:'Ink Cloud'};g=applyAction(g,attacker,{type:'attack',source:g[attacker].controllers[0].uid,target:g[defender].controllers[0].uid});assert.equal(g.pendingChoice.side,defender);assert.equal(playerView(g,attacker).pendingChoice,undefined);g=applyAction(g,defender,{type:'choice',id:g.pendingChoice.options[0].id});assert.equal(g.pendingChoice,undefined);}});
+test('search choices reveal options only to the choosing player',()=>{let g=fixture();g.phase='main';g[P].hand=[card('Goblin Knight')];g[P].deck=[card('Goblin Knight')];g[P].shards=100;g=applyAction(g,P,{type:'play',index:0,slot:0});assert.ok(g.pendingChoice);assert.ok(JSON.stringify(playerView(g,P).pendingChoice).includes('Goblin Knight'));assert.ok(!JSON.stringify(playerView(g,E)).includes('Goblin Knight'));});
+test('concession works off-turn and locks the finished match',()=>{const g=applyAction(fixture(),E,{type:'concede'});assert.equal(playerView(g,P).result,'Victory');assert.equal(playerView(g,E).result,'Defeat');assert.throws(()=>applyAction(g,P,{type:'advance'}));});
+test('unknown balance versions cannot silently change rules',()=>{const g=fixture();g.balanceVersion='older';assert.throws(()=>applyAction(g,P,{type:'advance'}));});
+// Run both seats through the network action boundary, choosing only server-offered options.
+let g=fixture(), moves=0;
+while(!g.finished && moves++<600){const seat=g.pendingChoice?.side||(g.isMyTurn?P:E);if(g.pendingChoice){g=applyAction(g,seat,{type:'choice',id:g.pendingChoice.options[0].id});continue;}let move={type:'advance'};
+ if(g.phase==='main'){const i=g[seat].hand.findIndex(c=>c.card_type==='creature'&&c.cost<=g[seat].shards);if(i>=0&&g[seat].creatures.some(u=>!u))move={type:'play',index:i};}
+ if(g.phase==='combat'){const units=[...g[seat].creatures,...g[seat].controllers].filter(u=>u?.canAttack);const enemy=seat===P?E:P;outer:for(const source of units)for(const target of [...g[enemy].creatures,...g[enemy].controllers].filter(Boolean)){try{performMove(g,{type:'attack',source:source.uid,target:target.uid});move={type:'attack',source:source.uid,target:target.uid};break outer;}catch{}}}
+ try { g=applyAction(g,seat,move); } catch { g=applyAction(g,seat,{type:'advance'}); }
+}
+assert.ok(g.finished,'Two-seat game should finish');console.log(`PASS two-seat game completed in ${moves} actions`);
+console.log(`${count+1} multiplayer checks passed.`);

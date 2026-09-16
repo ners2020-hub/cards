@@ -1,0 +1,8 @@
+.mp-shell { max-width: 760px; margin: 3rem auto; padding: 2rem; color: #eee8da; background: #171c28; border: 1px solid #494439; border-radius: 18px; font-family: system-ui, sans-serif; }
+.mp-shell h1 { font-size: 2.5rem; margin: 1rem 0; }.mp-shell h2 { margin-top: 2rem; }
+.mp-shell p,.mp-status p { margin: .75rem 0; }.mp-shell label,.mp-status label { display: grid; gap: .4rem; margin: 1rem 0; }
+.mp-shell input,.mp-shell select,.mp-status input,.mp-status textarea { padding: .8rem; color: #fff; background: #101521; border: 1px solid #5c6070; border-radius: 8px; width: 100%; }
+.mp-shell button,.mp-status button { padding: .7rem 1rem; margin: .3rem; border: 1px solid #a08a5a; border-radius: 8px; color: #f4dfb6; background: #292a31; }
+.mp-shell button:disabled,.mp-status button:disabled { opacity: .45; }.mp-deck { display: flex; gap: 1rem; }.mp-deck label { flex: 1; }.mp-room { display: block; }
+.mp-status { padding: 1rem 2rem; color: #eee8da; background: #151923; border-top: 1px solid #494439; }.mp-status form { max-width: 700px; }
+@media(max-width:600px) { .mp-shell { margin: 1rem; padding: 1rem; }.mp-deck { display: block; } }
