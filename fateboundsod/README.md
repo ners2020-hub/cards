@@ -2,8 +2,9 @@
 
 The latest balanced local game, solo arena and invite-only multiplayer playtest.
 
-- `/` or `/practice`: solo arena using balance patch 0.2.
+- `/` or `/practice`: solo arena using balance patch 0.3.
 - `/multiplayer`: authenticated invite-only rooms using the same rules, with server-authoritative actions and private player views.
+- Legacy game links such as `/TCG` and `/TCGMainMenu` redirect to the current solo arena. `/login` and `/Profile` open the current multiplayer account screen. The legacy interface is no longer served.
 - Supabase development project: `lyqfwiqdbwuyqinvqpsd`.
 - GitHub: `ners2020-hub/cards`, branch `add-fatebound`, app directory `fateboundsod`.
 

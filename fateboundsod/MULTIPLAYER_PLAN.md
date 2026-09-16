@@ -1,6 +1,6 @@
 # Invite-only multiplayer playtest
 
-> Implementation update (2026-09-16): invite-only multiplayer now uses the local balance 0.2 rules. The backend is deployed and live multiplayer tests passed. See `MULTIPLAYER.md` for architecture, verification, cleanup and the remaining frontend-hosting step. The original plan below is retained as design context.
+> Implementation update (2026-09-16): invite-only multiplayer now uses the local balance 0.3 rules. The backend is deployed and live multiplayer tests passed. See `MULTIPLAYER.md` for architecture, verification, cleanup and the published frontend. The original plan below is retained as design context.
 
 ## Current state
 
@@ -26,4 +26,4 @@ Record match/balance version, deck and controller choices, winner, turn count an
 - Supabase function authentication: https://supabase.com/docs/guides/functions/auth
 - Private Realtime authorization: https://supabase.com/docs/guides/realtime/authorization
 
-This document is an implementation plan. Multiplayer has not been migrated or deployed by the balance update.
+This document preserves the original implementation plan. The current multiplayer backend and frontend are deployed; see MULTIPLAYER.md for verification and limitations.
