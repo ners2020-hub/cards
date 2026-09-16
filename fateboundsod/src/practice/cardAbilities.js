@@ -227,7 +227,7 @@ export const definitions = {
 // Explicit prototype interpretations for text that does not fully specify timing or values.
 export const interpretations = {
   'Reaper': 'Kills do not refund attacks. The current game has no separate block/exhaust phase.',
-  'Frozen Spirit': 'Its direct-attack bypass applies only when the sole enemy creature is Frozen; it returns after dealing damage.',
+  'Frozen Spirit': 'Returns after dealing attack damage. A Frozen enemy creature still protects its Controller; bypass requires Stealth.',
   "Draco's Slayer": 'Choose equipment or removal when played. Equipment requires Draco; removal requires a 6+ AP creature.',
   'Sun Wolf': 'On summon, choose an immediate attack when the first-two-turn attack lock permits it.',
   "Shadow's Embrace": 'The stolen hand card becomes a 0/base-CH Guardian token (minimum 1 CH); sacrifice it to heal that CH.',

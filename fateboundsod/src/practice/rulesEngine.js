@@ -241,11 +241,14 @@ function attackUnit(g, side, source, target, input) {
   recalc(g); if (!source?.canAttack) throw new Error('This unit cannot attack now.');
   if (!target || target.side === side || !['creatures', 'controllers'].includes(target.zone)) throw new Error('Choose an enemy unit.');
   if (target.traits.untargetable || target.traits.invulnerable || target.traits.cannotBeAttacked) throw new Error('That target cannot be attacked.');
-  const guardians = g[other(side)].creatures.filter(u => u && (u.traits.guardian || (target.zone === 'controllers' && u.traits.guardianController)) && !u.traits.cannotDefend);
-  const bypass = source.traits.stealth || (source.traits.bypassSwarm && guardians.every(u => u.card.name.includes('Swarm'))) || (source.card.name === 'Frozen Spirit' && g[other(side)].creatures.filter(Boolean).length === 1 && g[other(side)].creatures.find(Boolean)?.statuses.Frozen);
-  if (guardians.length && !guardians.includes(target) && !bypass) throw new Error('A Guardian must be attacked first.');
+  const defendingCreatures = g[other(side)].creatures.filter(Boolean);
+  const guardians = defendingCreatures.filter(u => (u.traits.guardian || u.traits.guardianController) && !u.traits.cannotDefend);
+  const bypass = source.zone === 'creatures' && source.traits.stealth;
+  if (!bypass) {
+    if (guardians.length && !guardians.includes(target)) throw new Error('A shield creature (Guardian) must be attacked first.');
+    if (target.zone === 'controllers' && defendingCreatures.length) throw new Error('Defeat all enemy creatures before attacking a controller. Only a creature with Stealth can bypass them.');
+  }
   if (target.traits.waterSafe && source.card.element !== 'water') throw new Error('Water Safe protects this target from non-Water cards.');
-  if (target.zone === 'controllers' && target.card.name === 'CyRelli Princess' && g[target.side].creatures.some(u => u?.card.name === "CyRelli's Tiger")) throw new Error('CyRelli’s Tiger protects the Princess.');
   if (target.card.name === 'Dark Knight' && source.currentAP <= 3 && !hasStatus(target, 'Silenced')) throw new Error('Dark Knight cannot be attacked by units with 3 AP or less.');
   const ctx = context(g, side, source, input);
   const defending = context(g, other(side), target, input);
@@ -424,7 +427,20 @@ export async function runAITurn(state, { delayMs = 350, difficulty = 'medium', o
       const options = [...units(g, side).flatMap(u => abilityList(u).map((_, index) => ({ type: 'ability', source: u.uid, index }))), ...g[side].hand.map((_, index) => ({ type: 'play', index }))];
       if (difficulty === 'easy') options.reverse();
       for (const move of options) {
-        try { const next = performMove(g, move, [], automatic); if (JSON.stringify(next) !== JSON.stringify(g)) { await step(move); acted = true; break; } } catch { /* Try the next legal action. */ }
+        try {
+          const next = performMove(g, move, [], automatic);
+          // Do not spend every turn's income on an empty optional search/summon.
+          if (move.type === 'ability' && !next.pendingChoice) {
+            const beforeEffect = clone(g), afterEffect = clone(next);
+            for (const value of [beforeEffect, afterEffect]) {
+              delete value.log; delete value.lastEffect;
+              for (const owner of sides) for (const unit of field(value, owner)) delete unit.used;
+            }
+            afterEffect[side].shards = Math.max(beforeEffect[side].shards, afterEffect[side].shards);
+            if (JSON.stringify(beforeEffect) === JSON.stringify(afterEffect)) continue;
+          }
+          if (JSON.stringify(next) !== JSON.stringify(g)) { await step(move); acted = true; break; }
+        } catch { /* Try the next legal action. */ }
       }
     } else if (g.phase === 'combat') {
       const move = chooseAIAttack(g, side);

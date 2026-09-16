@@ -6,6 +6,7 @@
   "scripts": {
     "test:rules": "node scripts/test-abilities.mjs",
     "test:multiplayer": "node scripts/test-multiplayer.mjs",
+    "test:protection": "node scripts/test-controller-protection.mjs",
     "bundle:multiplayer": "node scripts/bundle-multiplayer.mjs",
     "dev": "vite",
     "build": "vite build",

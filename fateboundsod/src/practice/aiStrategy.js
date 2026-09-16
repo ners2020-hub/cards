@@ -11,8 +11,9 @@ function visibleThreat(g, side) {
   const threats = units(g[opponent(side)]).filter(u =>
     !u.traits?.cannotAttack && !['Frozen', 'Paralyzed', 'Bound', 'Zombified'].some(s => u.statuses?.[s])
   ).map(u => u.currentAP * (u.attackLimit || 1));
-  const protectedByGuardian = g[side].creatures.some(u => u && (u.traits?.guardian || u.traits?.guardianController) && !u.traits?.cannotDefend);
-  return protectedByGuardian ? Math.max(0, ...threats) : threats.reduce((a, b) => a + b, 0);
+  const protectedByCreatures = g[side].creatures.some(Boolean);
+  const stealthThreat = g[opponent(side)].creatures.filter(u => u?.traits?.stealth && !u.traits.cannotAttack && !['Frozen', 'Paralyzed', 'Bound', 'Zombified'].some(s => u.statuses?.[s])).reduce((n, u) => n + u.currentAP * (u.attackLimit || 1), 0);
+  return protectedByCreatures ? Math.max(stealthThreat, 0, ...threats) : threats.reduce((a, b) => a + b, 0);
 }
 export function scoreCombatMove(before, after, side, move) {
   const enemy = opponent(side);

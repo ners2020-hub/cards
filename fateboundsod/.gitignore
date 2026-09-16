@@ -1,4 +1,9 @@
 #env
+components.json
+.npmrc
+supabase/config.toml
+supabase/functions/adminUpsertCard/
+supabase/functions/redeem-promocode/
 outputs/
 supabase/functions/_shared/rules/
 supabase/.temp/
@@ -21,8 +26,7 @@ dist-ssr
 *.local
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
+.vscode/
 .idea
 .DS_Store
 *.suo

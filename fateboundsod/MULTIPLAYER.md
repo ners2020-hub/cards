@@ -1,5 +1,11 @@
 # Invite-only multiplayer
 
+## Rules update 0.3
+
+Attacks must target defending shield creatures (Guardians) first, other creatures next, and controllers only after all defending creatures leave the field. Only an attacking creature with Stealth bypasses this order. Stealth on a controller does not qualify; other target immunities still apply. Frozen and unable-to-defend creatures still block controller attacks, although a disabled Guardian cannot enforce shield priority. Direct spell and ability damage is unchanged. Older Swarm/Frozen-Spirit bypass text was updated to require Stealth.
+
+New matches use balance 0.3. Thirteen targeted protection tests, the rules and multiplayer suites, and nine complete AI games cover this update. The AI also avoids spending its income on empty optional search/summon abilities. The spreadsheet under `docs/balance` remains the earlier 0.2 snapshot.
+
 Implemented against Supabase project `lyqfwiqdbwuyqinvqpsd` on 2026-09-16. The canonical rules are the local `src/practice` modules, including balance patch 0.2. The older `components/tcg/gameEngine` does not power multiplayer.
 
 ## Play
