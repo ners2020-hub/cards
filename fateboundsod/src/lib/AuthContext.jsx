@@ -22,6 +22,10 @@ export function AuthProvider({ children }) {
         setUser(null);
       } else {
         setUser(data?.session?.user ?? null);
+        if (data?.session?.user && window.location.pathname === '/multiplayer' && sessionStorage.getItem('fatebound.afterAuth') === '/store') {
+          sessionStorage.removeItem('fatebound.afterAuth');
+          window.location.replace('/store');
+        }
       }
 
       setLoading(false);

@@ -11,6 +11,7 @@ export default [
       "src/pages/**/*.{js,mjs,cjs,jsx}",
       "src/practice/**/*.{js,mjs,cjs,jsx}",
       "src/multiplayer/**/*.{js,mjs,cjs,jsx}",
+      "src/store/**/*.{js,mjs,cjs,jsx}",
       "src/Layout.jsx",
     ],
     ignores: ["src/lib/**/*", "src/components/ui/**/*"],

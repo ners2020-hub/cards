@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 
 const Practice = lazy(() => import('./practice/Practice.jsx'));
 const Multiplayer = lazy(() => import('./multiplayer/Multiplayer.jsx'));
+const Store = lazy(() => import('./store/Store.jsx'));
 
 function Redirect({ to }) {
   const { search, hash } = useLocation();
@@ -16,6 +17,8 @@ export default function App() {
         <Route path="/" element={<Practice />} />
         <Route path="/practice" element={<Practice />} />
         <Route path="/multiplayer" element={<Multiplayer />} />
+        <Route path="/store" element={<Store />} />
+        <Route path="/Shop" element={<Redirect to="/store" />} />
         <Route path="/login" element={<Redirect to="/multiplayer" />} />
         <Route path="/LoginPage" element={<Redirect to="/multiplayer" />} />
         <Route path="/Profile" element={<Redirect to="/multiplayer" />} />
