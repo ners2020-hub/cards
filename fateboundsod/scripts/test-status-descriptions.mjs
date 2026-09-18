@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import {describeStatus} from '../src/practice/statusDescriptions.js';
+assert.match(describeStatus('White Out',{ap:-2,remaining:1}).description,/-2 attack/);
+assert.match(describeStatus('White Out',{ap:-2,remaining:1}).duration,/application turn does not count/);
+assert.match(describeStatus('Bound',{remaining:2,trait:'cannotDefend'}).description,/activated abilities/);
+assert.match(describeStatus('Paralyzed',{remaining:2,dot:3}).description,/Loses 3 health/);
+assert.match(describeStatus('Stealth',{trait:'stealth'}).description,/bypass shields/);
+assert.match(describeStatus('Doomed',{end:3,destroy:true}).description,/Destroyed when/);
+assert.match(describeStatus('Paralyzed',{source:'u2'}).duration,/source card remains/);
+assert.match(describeStatus('Unknown',{ap:4,ch:2}).description,/\+4 attack/);
+console.log('PASS numeric modifiers, duration, restrictions, damage over time and source-bound effects.');

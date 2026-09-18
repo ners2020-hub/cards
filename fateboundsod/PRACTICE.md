@@ -43,3 +43,6 @@ Attacks announce both cards, move the attacker toward its target, then reveal da
 
 Targeted spells now display their card and affected names, send a visible projectile to battlefield targets, highlight impacts and pause before committing the resulting board. Multi-target spells highlight all affected cards; public effects never contain hidden-hand choices.
 
+
+Active status labels can be hovered, clicked or tapped for explanations. Card inspection shows current attack/health, each effect's mechanical changes and its expiry conditions. These descriptions read the live status data, including White Out's attack reduction.
+

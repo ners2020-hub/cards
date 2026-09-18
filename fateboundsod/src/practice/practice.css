@@ -8,3 +8,6 @@
 
 .spell-projectile{position:fixed;width:22px;height:22px;z-index:95;pointer-events:none;border-radius:50%;background:radial-gradient(circle,#fff 5%,#e0c4ff 30%,#9363f4 60%,transparent 72%);box-shadow:0 0 24px 10px #b187ff99}.spell-preview{position:absolute;width:85px;height:116px;object-fit:cover;bottom:calc(100% + 12px);border:1px solid #d6b4ff;border-radius:7px;box-shadow:0 0 30px #8f66d977}@media(prefers-reduced-motion:reduce){.spell-projectile{display:none}}
 
+
+.status-explainer{cursor:help;pointer-events:auto!important;z-index:6;text-align:center}.status-explainer:focus-visible{outline:2px solid #fff;outline-offset:-2px}.active-effects{margin:20px 0;padding:18px;border:1px solid #bda4e24d;background:#b499d80a;border-radius:8px}.active-effects h3{font:20px Georgia,serif;color:#e6d2ff;margin-bottom:12px}.active-effects article{padding:12px 0;border-top:1px solid #ffffff14}.active-effects h4{font-weight:600;color:#ead8b3;margin-bottom:6px}.active-effects small{color:#b6a5ca;font-size:11px;line-height:1.6;display:block}.active-effects p{margin-bottom:7px}
+
