@@ -291,7 +291,7 @@ function attackUnit(g, side, source, target, input) {
     for (const a of ctx.attached()) definition(a).onDamage?.(context(g, side, a, input), target, source);
   }
   note(g, `${source.card.name} attacks ${target.card.name} for ${dealt}.`);
-  g.lastEffect = { kind: 'attack', text: `${source.card.name} → ${target.card.name}`, uid: target.uid, amount: dealt }; recalc(g);
+  g.lastEffect = { kind: 'attack', source: source.uid, text: `${source.card.name} → ${target.card.name}`, uid: target.uid, amount: dealt }; recalc(g);
 }
 function advance(g, side, input) {
   const ctx = context(g, side, null, input);
@@ -352,7 +352,7 @@ export function outcome(g) {
 }
 export function performMove(state, move, choices = [], auto = false) {
   if (outcome(state)) throw new Error('The duel is over.');
-  const g = clone(state); delete g.pendingChoice;
+  const g = clone(state); delete g.pendingChoice; delete g.lastEffect;
   recalc(g);
   const side = g.isMyTurn ? 'playerState' : 'opponentState';
   const input = { choices, cursor: 0, auto, events: 0 };
@@ -433,7 +433,7 @@ export function newMatch(element, enemy, controllerName, enemyControllerName, se
 export async function runAITurn(state, { delayMs = 350, difficulty = 'medium', onStep = () => {}, cancelled = () => false, controlledSide = 'opponentState', simulation = false } = {}) {
   let g = state; let moves = 0;
   const automatic = simulation ? 'all' : true;
-  const step = async move => { if (cancelled()) return; g = performMove(g, move, [], automatic); onStep(clone(g)); if (delayMs) await new Promise(r => setTimeout(r, delayMs)); };
+  const step = async move => { if (cancelled()) return; g = performMove(g, move, [], automatic); await onStep(clone(g)); if (delayMs) await new Promise(r => setTimeout(r, delayMs)); };
   while ((g.isMyTurn ? 'playerState' : 'opponentState') === controlledSide && !g.pendingChoice && !outcome(g) && !cancelled() && moves++ < 70) {
     const side = controlledSide; let acted = false;
     if (g.phase === 'main') {

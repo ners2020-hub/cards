@@ -5,6 +5,7 @@ import { cards, elements, newMatch, outcome, performMove, resolveChoice, cancelC
 import { definitions, interpretations } from './cardAbilities.js';
 import { DEFAULT_RULES } from './catalog.js';
 import './practice.css';
+import { useBattlePlayback } from './useBattlePlayback';
 
 const colors = { fire: '#f4a261', cryo: '#88d9f5', blood: '#ec708c', wind: '#89d4bb', earth: '#b4bd7f', water: '#82aaff', shadow: '#bf9ee8', light: '#edda97', electric: '#e5cd66' };
 function Card({ card, instance, onClick, selected, ready, onInspect, onAbility, cost }) {
@@ -22,7 +23,7 @@ function Card({ card, instance, onClick, selected, ready, onInspect, onAbility, 
   }, [instance?.currentCH]);
   const isUnit = ['creature', 'controller'].includes(card.card_type);
   const statuses = Object.keys(instance?.statuses || {});
-  return <motion.div layout={!reduced} initial={reduced ? false : { opacity: 0, y: 25, scale: .9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0 }} className={`duel-card ${selected ? 'selected' : ''} ${ready ? 'ready' : ''}`} style={{ '--element': colors[card.element] || '#d1c6ad' }}>
+  return <motion.div data-unit={instance?.uid} layout={!reduced} initial={reduced ? false : { opacity: 0, y: 25, scale: .9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0 }} className={`duel-card ${selected ? 'selected' : ''} ${ready ? 'ready' : ''}`} style={{ '--element': colors[card.element] || '#d1c6ad' }}>
     <button className="card-face" onClick={onClick} aria-label={`${card.name}, ${cost ?? card.cost} shards${isUnit ? `, ${instance?.currentAP ?? card.ap} attack, ${instance?.currentCH ?? card.ch} health` : `, ${card.card_type}`}`}>
       {!failed && card.image_url && <img src={card.image_url} alt="" onError={() => setFailed(true)} />}
       <span className="card-fallback"><Diamond size={42} /></span><span className="card-cost">{cost ?? card.cost}</span>
@@ -67,21 +68,25 @@ export default function Practice({ remote = null }) {
   const [sound, setSound] = useState(false);
   const [difficulty, setDifficulty] = useState('medium');
   const [localBusy, setBusy] = useState(false);
-  const busy = remote ? remote.busy || !game?.isMyTurn : localBusy;
+  const playback = useBattlePlayback(setGame, setNotice);
+  const remoteVersion = useRef(null);
+  useEffect(() => { if (playback.cue) pulse(playback.cue.text, playback.cue.kind, false); }, [playback.cue]);
+  const busy = playback.playing || (remote ? remote.busy || !game?.isMyTurn : localBusy);
   useEffect(() => {
-    if (!remote?.game) return;
-    setGame(remote.game); setSelection(null); setAbilityUnit(null);
+    if (!remote?.game || remoteVersion.current === remote.version) return;
+    const initial = remoteVersion.current === null; remoteVersion.current = remote.version;
+    void playback.present(remote.game, { initial }); setSelection(null); setAbilityUnit(null);
     setElement(remote.element); setEnemy(remote.enemy);
     setNotice(remote.game.pendingChoice?.prompt || (remote.game.waitingForChoice ? "Waiting for a choice…" : remote.game.isMyTurn ? "Your move." : "Rival’s turn."));
-    if (remote.game.lastEffect) setEffect({ ...remote.game.lastEffect, id: remote.version });
+    
   }, [remote?.game, remote?.version]);
   const generation = useRef(0);
   const audio = useRef(null);
   const winner = game ? remote ? game.result : outcome(game) : null;
   useEffect(() => () => { generation.current++; audio.current?.close(); }, []);
   useEffect(() => { if (!effect) return; const timer = setTimeout(() => setEffect(null), 850); return () => clearTimeout(timer); }, [effect]);
-  function pulse(text, kind = 'summon') {
-    setEffect({ text, kind, id: Date.now() });
+  function pulse(text, kind = 'summon', show = true) {
+    if (show) setEffect({ text, kind, id: Date.now() });
     if (!sound) return;
     const Audio = window.AudioContext || window.webkitAudioContext;
     if (!Audio) return;
@@ -90,16 +95,16 @@ export default function Practice({ remote = null }) {
     tone.frequency.setValueAtTime(kind === 'attack' ? 150 : 440, ctx.currentTime); tone.frequency.exponentialRampToValueAtTime(70, ctx.currentTime + .25);
     gain.gain.setValueAtTime(.06, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + .3); tone.start(); tone.stop(ctx.currentTime + .3);
   }
-  function begin() { if (remote) { remote.leave(); return; } generation.current++; setBusy(false); setGame(newMatch(element, enemy, controller, enemyController)); setSelection(null); setInspect(null); setAbilityUnit(null); setNotice('Draw a card to begin your turn.'); pulse('The duel begins'); }
-  function leave() { if (remote) { remote.leave(); return; } generation.current++; setBusy(false); setGame(null); setSelection(null); setAbilityUnit(null); }
+  function begin() { if (remote) { playback.reset(); remote.leave(); return; } generation.current++; setBusy(false); playback.reset(newMatch(element, enemy, controller, enemyController)); setSelection(null); setInspect(null); setAbilityUnit(null); setNotice('Draw a card to begin your turn.'); pulse('The duel begins'); }
+  function leave() { if (remote) { playback.reset(); remote.leave(); return; } generation.current++; setBusy(false); playback.reset(null); setSelection(null); setAbilityUnit(null); }
   async function runOpponent(state) {
     if (state.isMyTurn || state.pendingChoice || outcome(state)) return;
     const token = ++generation.current; setBusy(true);
     try {
-      const result = await runAITurn(state, { delayMs: 450, difficulty, cancelled: () => generation.current !== token, onStep(next) {
+      const result = await runAITurn(state, { delayMs: 0, difficulty, cancelled: () => generation.current !== token, async onStep(next) {
         if (generation.current !== token) return;
-        setGame(next); setNotice(next.log.at(-1) || 'Opponent is thinking…');
-        if (next.lastEffect) pulse(next.lastEffect.text || 'Effect resolved', next.lastEffect.kind);
+        await playback.present(next);
+        
       } });
       if (generation.current !== token) return;
       setGame(result.nextState);
@@ -107,19 +112,21 @@ export default function Practice({ remote = null }) {
     } catch (error) { if (generation.current === token) setNotice(`Could not resolve the opponent’s move: ${error.message}`); }
     finally { if (generation.current === token) setBusy(false); }
   }
-  function accept(next) {
-    setGame(next); setSelection(null); setAbilityUnit(null);
+  async function accept(next) {
+    const token = generation.current;
+    setSelection(null); setAbilityUnit(null); await playback.present(next);
+    if (generation.current !== token) return;
     if (next.pendingChoice) { setNotice(next.pendingChoice.prompt); return; }
     setNotice(next.log.at(-1) || 'Action resolved.');
-    if (next.lastEffect) pulse(next.lastEffect.text || 'Effect resolved', next.lastEffect.kind);
+    
     void runOpponent(next);
   }
   function move(action) {
-    if (!game || busy || winner || !game.isMyTurn || game.pendingChoice || game.waitingForChoice) return;
+    if (!game || busy || playback.locked.current || winner || !game.isMyTurn || game.pendingChoice || game.waitingForChoice) return;
     if (remote) { void remote.act(action); return; }
     try { accept(performMove(game, action)); } catch (error) { setNotice(error.message); }
   }
-  function choose(id) { if (remote) { if (!remote.busy) void remote.act({ type: "choice", id }); return; } try { accept(resolveChoice(game, id)); } catch (error) { setGame(cancelChoice(game)); setNotice(error.message); } }
+  function choose(id) { if (playback.locked.current) return; if (remote) { if (!remote.busy) void remote.act({ type: "choice", id }); return; } try { accept(resolveChoice(game, id)); } catch (error) { setGame(cancelChoice(game)); setNotice(error.message); } }
   function unitClick(unit) {
     if (busy || winner || game.pendingChoice) return;
     if (selection?.type === 'attack') { move({ type: 'attack', source: selection.uid, target: unit.uid }); return; }
@@ -139,7 +146,7 @@ export default function Practice({ remote = null }) {
     ready={unit.side === 'playerState' && game.phase === 'combat' && unit.canAttack && !busy}
     selected={selection?.uid === unit.uid} onClick={() => unitClick(unit)}
     onAbility={unit.side === 'playerState' && abilityList(unit).length ? () => setAbilityUnit(unit) : null} />;
-  return <div className="fate-app" style={{ '--accent': colors[element] }}>
+  return <div ref={playback.root} className="fate-app" style={{ '--accent': colors[element] }}>
     <header className="fate-header"><button className="brand" onClick={leave}><Diamond /><span>FATEBOUND<small>SHARDS OF DOMINION</small></span></button>
       <div className="header-tools"><span className="practice-badge">{remote ? "INVITE DUEL" : "SOLO ARENA"}</span><button aria-label={sound ? 'Mute effects' : 'Enable sound effects'} onClick={() => setSound(!sound)}>{sound ? <Volume2 size={19} /> : <VolumeX size={19} />}</button><button onClick={() => setLibrary(true)}><BookOpen size={18} /><span> Card library</span></button><button onClick={() => setHelp(true)}>Rules</button><a href="/multiplayer">Multiplayer</a><a href="/store">Card store</a><a href="/login">Account</a></div>
     </header>
@@ -160,7 +167,7 @@ export default function Practice({ remote = null }) {
         {mine && state.controllers.some(u => u?.card.name === 'Shadow Master') && state.graveyard.some(c => c.element === 'shadow' && c.card_type === 'spell') && <div className="graveyard-casts">Cast from discard (+1 shard): {state.graveyard.map((card, index) => card.element === 'shadow' && card.card_type === 'spell' && <button key={`${card.id}-${index}`} onClick={() => move({ type: 'play', index, fromGraveyard: true })}>{card.name}</button>)}</div>}
       </section>; })}
       <div className="turn-strip">{busy ? 'OPPONENT’S TURN' : 'YOUR TURN'} · {game.turnNumber} <span>{game.phase.toUpperCase()} PHASE</span></div>
-      <AnimatePresence>{effect && <motion.div key={effect.id} className={`battle-effect ${effect.kind}`} initial={{ opacity: 0, scale: .7 }} animate={{ opacity: [0, 1, 0], scale: [.7, 1, 1.1] }} transition={{ duration: .85 }}><Sparkles /><span>{effect.text}</span></motion.div>}</AnimatePresence>
+      <div className="combat-announcement" role="status" aria-live="polite">{playback.cue?.text && <><strong>{playback.cue.kind === 'attack' ? 'ATTACK' : 'CARD EFFECT'}</strong><span>{playback.cue.text}</span></>}</div><AnimatePresence>{effect && <motion.div key={effect.id} className={`battle-effect ${effect.kind}`} initial={{ opacity: 0, scale: .7 }} animate={{ opacity: [0, 1, 0], scale: [.7, 1, 1.1] }} transition={{ duration: .85 }}><Sparkles /><span>{effect.text}</span></motion.div>}</AnimatePresence>
       <section className="hand-zone"><div className="hand-title">YOUR HAND <span>{game.playerState.hand.length} CARDS · CLICK SPELLS / ARTIFACTS TO PLAY</span></div><div className="hand-cards"><AnimatePresence>{game.playerState.hand.map((card, i) => <Card key={card.instanceId || `${i}-${card.id}`} card={card} cost={(remote ? card.displayCost : cardCost(game, 'playerState', card))} onInspect={setInspect} selected={selection?.type === 'hand' && selection.index === i} ready={!busy && game.phase === 'main' && game.playerState.shards >= (remote ? card.displayCost : cardCost(game, 'playerState', card))} onClick={() => selectCard(card, i)} />)}</AnimatePresence></div></section>
     </section><aside className="duel-sidebar"><div className="eyebrow">DUEL STATUS</div><h2>{winner || (busy ? 'Rival’s turn' : 'Your move')}</h2><div className="phase-list">{['draw', 'energy', 'main', 'combat'].map((phase, i) => <div className={game.phase === phase ? 'current' : ''} key={phase}><span>0{i + 1}</span>{phase}<Diamond size={12} /></div>)}</div>
       <button className="primary" disabled={busy || !!winner || !!game.pendingChoice || game.waitingForChoice || !game.isMyTurn} onClick={() => move({ type: 'advance' })}>{({ draw: 'Draw card', energy: 'Gain 2 shards', main: 'Begin combat', combat: 'End turn' })[game.phase]}<ArrowRight size={17} /></button><p className="notice" role="status">{notice}</p>{selection && <button onClick={() => setSelection(null)}>Cancel selection</button>}<div className="log-heading">BATTLE LOG</div><div className="battle-log">{game.log.slice(-15).reverse().map((line, i) => <p key={`${i}-${line}`}>{line}</p>)}</div><p className="scope-note">✦ on a unit opens its activated abilities. Inspect cards for printed text and rule notes.</p>

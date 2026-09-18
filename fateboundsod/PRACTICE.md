@@ -36,3 +36,7 @@ The tests cover representative mechanics and controller safety; they do not exha
 ## Rules 0.4
 Gain 2 shards per own Energy Phase. After end-of-turn effects, choose excess hand cards to discard until 7 remain. Drawing above 7 during the turn is allowed. Discarded cards enter the graveyard. AI follows the same limit.
 
+
+## Combat presentation
+Attacks announce both cards, move the attacker toward its target, then reveal damage with a reading pause. Solo AI awaits each presentation; received multiplayer updates are queued in order. Reduced-motion users receive a stationary announcement. The battle log stays visible on desktop and mobile.
+

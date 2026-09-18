@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {newMatch,runAITurn,performMove} from '../src/practice/rulesEngine.js';
+const g=newMatch('fire','fire','Flame Emperor','Flame Emperor',42);
+g.isMyTurn=false;g.phase='draw';g.lastEffect={kind:'attack',text:'Old attack'};
+assert.equal(performMove(g,{type:'advance'}).lastEffect,undefined);
+let inFlight=0,max=0,steps=0;
+await runAITurn(g,{delayMs:0,cancelled:()=>steps>=3,onStep:async()=>{inFlight++;max=Math.max(max,inFlight);await new Promise(r=>setTimeout(r,10));steps++;inFlight--;}});
+assert.equal(max,1);assert.equal(steps,3);assert.equal(inFlight,0);
+const a=newMatch('fire','fire','Flame Emperor','Flame Emperor',42);a.phase='combat';a.turnNumber=5;
+const source=a.playerState.controllers[0],target=a.opponentState.controllers[0];
+const result=performMove(a,{type:'attack',source:source.uid,target:target.uid});
+assert.equal(result.lastEffect.source,source.uid);assert.equal(result.lastEffect.uid,target.uid);assert.match(result.lastEffect.text,/→/);
+console.log('PASS attacks identify both cards, stale effects do not replay, and AI waits for presentation.');
