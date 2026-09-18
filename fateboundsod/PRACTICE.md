@@ -40,3 +40,6 @@ Gain 2 shards per own Energy Phase. After end-of-turn effects, choose excess han
 ## Combat presentation
 Attacks announce both cards, move the attacker toward its target, then reveal damage with a reading pause. Solo AI awaits each presentation; received multiplayer updates are queued in order. Reduced-motion users receive a stationary announcement. The battle log stays visible on desktop and mobile.
 
+
+Targeted spells now display their card and affected names, send a visible projectile to battlefield targets, highlight impacts and pause before committing the resulting board. Multi-target spells highlight all affected cards; public effects never contain hidden-hand choices.
+

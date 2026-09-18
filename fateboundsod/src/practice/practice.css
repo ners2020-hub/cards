@@ -5,3 +5,6 @@
 
 .combat-announcement{position:sticky;bottom:12px;margin:0 auto;z-index:40;pointer-events:none;display:flex;flex-direction:column;align-items:center;gap:8px;width:fit-content;max-width:90%;text-align:center}.combat-announcement:not(:empty){padding:15px 26px;background:#101720f2;border:1px solid #d7bc82;border-radius:8px;box-shadow:0 8px 35px #0008}.combat-announcement strong{font-size:9px;letter-spacing:3px;color:#e4be80}.combat-announcement span{font:18px Georgia,serif;color:#fff0d0}@media(max-width:800px){.duel-sidebar .log-heading,.duel-sidebar .battle-log{display:block;grid-column:1 / -1}.duel-sidebar .battle-log{max-height:160px}.combat-announcement span{font-size:14px}}
 
+
+.spell-projectile{position:fixed;width:22px;height:22px;z-index:95;pointer-events:none;border-radius:50%;background:radial-gradient(circle,#fff 5%,#e0c4ff 30%,#9363f4 60%,transparent 72%);box-shadow:0 0 24px 10px #b187ff99}.spell-preview{position:absolute;width:85px;height:116px;object-fit:cover;bottom:calc(100% + 12px);border:1px solid #d6b4ff;border-radius:7px;box-shadow:0 0 30px #8f66d977}@media(prefers-reduced-motion:reduce){.spell-projectile{display:none}}
+

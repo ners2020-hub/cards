@@ -94,7 +94,13 @@ function remove(g, unit, cause, input, killer = null) {
   if (unit.flags.dracoCurse) g[unit.flags.dracoCurse].flags.dracoDoubleNext = true;
   return true;
 }
+function recordSpellTarget(input, source, target) {
+  const presentation = input?.spellPresentation;
+  if (!presentation || !target?.uid || !zones.includes(target.zone) || presentation?.cardId !== source?.card?.id) return;
+  if (!presentation.targets.some(t => t.uid === target.uid)) presentation.targets.push({ uid: target.uid, name: target.card.name });
+}
 function damage(g, target, amount, kind, input, source = null) {
+  recordSpellTarget(input, source, target);
   if (!alive(g, target) || amount <= 0) return 0;
   recalc(g);
   if (hasStatus(target, 'Lightning chains') && target.currentAP === 0 && target.zone === 'creatures') {
@@ -156,14 +162,15 @@ function context(g, side, source, input) {
       candidates = candidates.filter(u => u.side === side || (!u.traits?.untargetable && !(source?.card?.card_type === 'spell' && (u.traits?.spellUntargetable || u.traits?.spellImmune)) && !(u.traits?.waterSafe && source?.card?.element !== 'water')));
       const chosen = input.targetOverride ? candidates.find(u => u.uid === input.targetOverride) : select(ctx, `Choose ${type}`, candidates.map(u => ({ id: u.uid, label: `${u.side === side ? 'Ally' : 'Enemy'}: ${u.card.name} (${u.currentAP} AP / ${u.currentCH} CH)`, card: u.card, value: u, score: u.side === side ? (u.damage || 0) + u.currentAP : u.currentAP + u.currentCH })), optional);
       if (input.targetOverride && !chosen && !optional) throw new Error('The required target is not available.');
+      recordSpellTarget(input, source, chosen);
       if (chosen?.side !== side && chosen && source?.card?.card_type === 'spell' && chosen.card.name === 'Volt-Howler') damage(g, active(g, side), 2, 'ability', input, chosen);
       return chosen;
     },
-    status: (u, name, data = {}) => { if (!u) return; if (name === 'Frozen' && u.traits?.freezeImmune) return; if (name === 'Frozen' && ctx.has('Frost Wyrm')) data = { ...data, remaining: (data.remaining || 1) + 1 }; u.statuses[name] = { applied: g.turnNumber, ...data }; if (name === 'Frozen' && ctx.has('Enchanted Ice Crystal') && g[side].flags.freezeShard !== g.turnNumber) { g[side].flags.freezeShard = g.turnNumber; g[side].shards++; } recalc(g); },
-    buff: (u, ap = 0, ch = 0, duration = 'permanent', name = 'Enchanted') => { if (!u) return; if (duration === 'permanent') { u.bonusAP += ap; u.bonusCH += ch; } else ctx.status(u, name, { ap, ch, ...(duration === 'end' ? { end: g.turnNumber } : { remaining: duration }) }); recalc(g); },
-    heal: (u, amount) => { if (u && !hasStatus(u, 'No healing')) { u.damage = Math.max(0, u.damage - amount); recalc(g); } },
+    status: (u, name, data = {}) => { if (!u) return; recordSpellTarget(input, source, u); if (name === 'Frozen' && u.traits?.freezeImmune) return; if (name === 'Frozen' && ctx.has('Frost Wyrm')) data = { ...data, remaining: (data.remaining || 1) + 1 }; u.statuses[name] = { applied: g.turnNumber, ...data }; if (name === 'Frozen' && ctx.has('Enchanted Ice Crystal') && g[side].flags.freezeShard !== g.turnNumber) { g[side].flags.freezeShard = g.turnNumber; g[side].shards++; } recalc(g); },
+    buff: (u, ap = 0, ch = 0, duration = 'permanent', name = 'Enchanted') => { if (!u) return; recordSpellTarget(input, source, u); if (duration === 'permanent') { u.bonusAP += ap; u.bonusCH += ch; } else ctx.status(u, name, { ap, ch, ...(duration === 'end' ? { end: g.turnNumber } : { remaining: duration }) }); recalc(g); },
+    heal: (u, amount) => { recordSpellTarget(input, source, u); if (u && !hasStatus(u, 'No healing')) { u.damage = Math.max(0, u.damage - amount); recalc(g); } },
     damage: (u, amount, kind = source?.card?.card_type === 'spell' ? 'spell' : 'ability') => damage(g, u, amount, kind, input, source),
-    destroy: (u, cause = source?.card?.card_type === 'spell' ? 'spell' : 'ability') => u && remove(g, u, cause, input, source),
+    destroy: (u, cause = source?.card?.card_type === 'spell' ? 'spell' : 'ability') => { recordSpellTarget(input, source, u); return u && remove(g, u, cause, input, source); },
     aoe: (amount, targets = g[other(side)].creatures.filter(Boolean)) => { let killed = 0; for (const u of [...targets]) { const exists = alive(g, u); ctx.damage(u, amount); if (exists && !alive(g, u)) killed++; } return killed; },
     draw: (count = 1, who = side) => { for (let i = 0; i < count; i++) { const card = g[who].deck.shift(); if (card) { g[who].hand.push(card); if (ctx.has('Umbra Reaver', other(who)) && g.phase !== 'draw') damage(g, active(g, who), 1, 'ability', input); } } },
     gain: (n, temporary = false) => { g[side].shards += n; if (temporary) g[side].temporaryShards += n; },
@@ -181,7 +188,7 @@ function context(g, side, source, input) {
     token: (name, ap, ch, count = 1, traits = {}) => { for (let i = 0; i < count && g[side].creatures.some(u => !u); i++) { const u = summonUnit(ctx, { id: `token-${name}`, name, ap, ch, cost: 0, card_type: 'creature', element: source?.card.element || 'shadow', token: true, description: Object.keys(traits).join(', ') }); for (const trait of Object.keys(traits)) u.statuses[trait] = { trait }; } },
     playFree: (card, target = null) => { const previous = input.targetOverride; input.targetOverride = target?.uid; try { play(g, side, card, input, { free: true }); } finally { input.targetOverride = previous; } },
     attackNow: target => attackUnit(g, side, source, target, input),
-    bounce: u => { const loc = u && locate(g, u); if (!loc) return; if (u.side !== side && ctx.has('Earth Defender', u.side)) return; g[loc.side][loc.zone][loc.index] = null; for (const a of ctx.attached(u)) remove(g, a, 'attachment', input); if (!u.card.token) { const card = { ...u.card, recalled: true }; if (card.name === 'Water Guardian') card.freeRecall = true; g[u.owner].hand.push(card); } g[side].flags.recalled = (g[side].flags.recalled || 0) + 1; if (ctx.has('Neptune') && u.side !== side) ctx.gain(1); for (const s of sides) { if (ctx.has('Spirit of the Wind', s)) g[s].shards++; if (ctx.has('Wind Orb', s) && u.card.element === 'wind' && u.side === s) ctx.draw(1, s); } note(g, `${u.card.name} returned to hand.`); },
+    bounce: u => { recordSpellTarget(input, source, u); const loc = u && locate(g, u); if (!loc) return; if (u.side !== side && ctx.has('Earth Defender', u.side)) return; g[loc.side][loc.zone][loc.index] = null; for (const a of ctx.attached(u)) remove(g, a, 'attachment', input); if (!u.card.token) { const card = { ...u.card, recalled: true }; if (card.name === 'Water Guardian') card.freeRecall = true; g[u.owner].hand.push(card); } g[side].flags.recalled = (g[side].flags.recalled || 0) + 1; if (ctx.has('Neptune') && u.side !== side) ctx.gain(1); for (const s of sides) { if (ctx.has('Spirit of the Wind', s)) g[s].shards++; if (ctx.has('Wind Orb', s) && u.card.element === 'wind' && u.side === s) ctx.draw(1, s); } note(g, `${u.card.name} returned to hand.`); },
     steal: (u, duration = null) => { if (!u || u.zone !== 'creatures') throw new Error('Choose a creature.'); const index = g[side].creatures.findIndex(c => !c); if (index < 0) throw new Error('You need an empty creature slot.'); const loc = locate(g, u); g[loc.side][loc.zone][loc.index] = null; u.side = side; g[side].creatures[index] = u; u.summonedTurn = g.turnNumber; if (duration) ctx.status(u, 'Stolen', { remaining: duration, destroy: true }); },
     banish: (u, turns = 2) => { const loc = u && locate(g, u); if (!loc) return; g[loc.side][loc.zone][loc.index] = null; for (const a of ctx.attached(u)) remove(g, a, 'attachment', input); g[u.owner].banished.push({ unit: u, remaining: turns, applied: g.turnNumber, double: ctx.has('Shadow Master') && ['Shadow Wraith', 'Dark Phantom', 'Night Terror'].includes(u.card.name) }); },
     flag: (name, value = true) => { g[side].flags[name] = value; },
@@ -206,6 +213,8 @@ function price(g, side, card) {
   return Math.max(card.name === "Draco's Inferno" ? 1 : 0, cost);
 }
 function play(g, side, card, input, move = {}) {
+  const previousPresentation = input.spellPresentation;
+  if (card.card_type === 'spell') input.spellPresentation = { cardId: card.id, targets: [] };
   const source = { card, side, uid: 'casting' }; let ctx = context(g, side, source, input);
   const spec = definition(card);
   if (!spec) throw new Error('Missing card rules.');
@@ -235,7 +244,12 @@ function play(g, side, card, input, move = {}) {
     if (card.element === 'wind') g[side].flags.windDiscount = g.turnNumber;
     emit(g, 'spellPlayed', card, input, side);
   }
-  recalc(g); g.lastEffect = { kind: card.card_type === 'spell' ? 'spell' : 'summon', text: card.name };
+  recalc(g);
+  const targets = card.card_type === 'spell' ? input.spellPresentation.targets : [];
+  g.lastEffect = { kind: card.card_type === 'spell' ? 'spell' : 'summon', text: targets.length ? `${card.name} → ${targets.map(t => t.name).join(', ')}` : card.name,
+    ...(card.card_type === 'spell' ? { source: active(g, side)?.uid, spellCard: { name: card.name, image_url: card.image_url, element: card.element }, targets } : {}) };
+  if (targets.length) note(g, g.lastEffect.text);
+  input.spellPresentation = previousPresentation;
 }
 function attackUnit(g, side, source, target, input) {
   recalc(g); if (!source?.canAttack) throw new Error('This unit cannot attack now.');

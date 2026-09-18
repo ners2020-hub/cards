@@ -1,0 +1,16 @@
+import assert from 'node:assert/strict';
+import {newMatch,performMove,cards} from '../src/practice/rulesEngine.js';
+import {playerView} from '../src/practice/multiplayer.js';
+const g=newMatch('fire','fire','Flame Emperor','Flame Emperor',42);g.phase='main';g.playerState.shards=50;
+g.opponentState.controllers.push({...structuredClone(g.opponentState.controllers[0]),uid:'u999'});
+g.playerState.hand=[structuredClone(cards.find(c=>c.name==='Freezing Spell'))];
+const n=performMove(g,{type:'play',index:0},[],true);
+assert.equal(n.lastEffect.targets.length,2);assert.equal(n.lastEffect.kind,'spell');assert.equal(n.lastEffect.spellCard.name,'Freezing Spell');
+assert.ok(n.lastEffect.targets.some(t=>t.uid===g.opponentState.controllers[0].uid));
+assert.ok(n.log.some(line=>line.includes('Freezing Spell →')));
+const view=playerView(n,'opponentState');assert.equal(view.lastEffect.targets[0].uid,n.lastEffect.targets[0].uid);
+assert.equal(view.opponentState.hand.length,0);
+const h=newMatch('fire','fire','Flame Emperor','Flame Emperor',44);h.phase='main';h.playerState.shards=50;
+h.playerState.hand=[structuredClone(cards.find(c=>c.name==='Burning Blast'))];
+const p=performMove(h,{type:'play',index:0},[],true);assert.equal(p.lastEffect.kind,'spell');assert.ok(p.lastEffect.targets.length);assert.ok(p.lastEffect.targets.every(t=>t.uid&&t.name&&!t.card));
+console.log('PASS spell damage/status targets, public animations, readable log and private hands.');

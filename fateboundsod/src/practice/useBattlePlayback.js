@@ -29,6 +29,26 @@ export function useBattlePlayback(setGame, setNotice) {
      const anim=source.animate([{transform:'translate(0,0) scale(1)',zIndex:30},{transform:'translate(0,0) scale(1.12)',zIndex:30,offset:.2},{transform:`translate(${dx*.85}px,${dy*.85}px) scale(1.07)`,zIndex:30,offset:.65},{transform:'translate(0,0) scale(1)',zIndex:30}],{duration:1000,easing:'ease-in-out'});
      animations.current.add(anim);await anim.finished.catch(()=>{});animations.current.delete(anim);
     }else await pause(reduced?350:1000);
+   }else if(effect?.kind==='spell' && effect.targets?.length){
+    await pause(reduced?300:600);
+    if(token!==epoch.current)return;
+    const source=root.current?.querySelector(`[data-unit="${effect.source}"]`);
+    const origin=source?.getBoundingClientRect() || root.current?.getBoundingClientRect();
+    await Promise.all(effect.targets.map(async hit=>{
+     const target=root.current?.querySelector(`[data-unit="${hit.uid}"]`);
+     if(!target||!origin)return;
+     const end=target.getBoundingClientRect();
+     if(!reduced){
+      const orb=document.createElement('div');orb.className='spell-projectile';orb.setAttribute('aria-hidden','true');
+      const x=origin.left+origin.width/2,y=origin.top+origin.height/2;
+      orb.style.left=`${x}px`;orb.style.top=`${y}px`;document.body.appendChild(orb);
+      const flight=orb.animate([{transform:'translate(-50%,-50%) scale(.5)',opacity:0},{opacity:1,offset:.2},{transform:`translate(${end.left+end.width/2-x}px,${end.top+end.height/2-y}px) scale(1.5)`,opacity:1}],{duration:900,easing:'ease-in-out'});
+      animations.current.add(flight);await flight.finished.catch(()=>{});animations.current.delete(flight);orb.remove();
+     }
+     if(token!==epoch.current)return;
+     const glow=target.animate([{boxShadow:'0 0 0 3px #d8bbff, 0 0 45px #ab78ff'},{boxShadow:'0 0 0 1px #d8bbff, 0 0 12px #ab78ff'}],{duration:450});
+     animations.current.add(glow);await glow.finished.catch(()=>{});animations.current.delete(glow);
+    }));
    }else if(effect)await pause(reduced?300:650);
    if(token!==epoch.current)return;
    current.current=next;setGame(next);
