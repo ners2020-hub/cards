@@ -2,6 +2,9 @@ begin;
 -- Freeze legacy browser-written balances before importing them into the server-owned store.
 revoke all on public.playerprogress from anon,authenticated;
 grant select on public.playerprogress to authenticated;
+alter table public.promocode_redemption enable row level security;
+revoke all on public.promocode_redemption from public,anon,authenticated;
+grant all on public.promocode_redemption to service_role;
 revoke execute on function public.redeem_promocode(text) from public,anon,authenticated;
 create table if not exists public.store_catalog (
  id text primary key, name text not null, element text not null, card_type text not null,
@@ -31,7 +34,8 @@ alter table public.store_redemptions enable row level security;
 revoke all on public.store_catalog,public.store_legacy_cards,public.store_accounts,public.store_receipts,public.store_redemptions from public,anon,authenticated;
 grant all on public.store_catalog,public.store_legacy_cards,public.store_accounts,public.store_receipts,public.store_redemptions to service_role;
 
-create or replace function public.store_request(p_actor uuid,p_operation text default 'get',p_item text default '',p_request uuid default null)
+drop function if exists public.store_request(uuid,text,text,uuid);
+create or replace function public.store_request(p_actor uuid,p_operation text default 'get',p_item text default '',p_request uuid default null,p_email text default null)
 returns jsonb language plpgsql security invoker set search_path='' as $$
 declare
  a public.store_accounts; old public.playerprogress; receipt public.store_receipts; promo public.promocode;
@@ -39,7 +43,7 @@ declare
  drawn jsonb:='[]'; price integer:=0; r double precision; picked_rarity text; i integer; requirement text;
  wins integer; deck_wins jsonb; winrow record; result jsonb; normalized text:=upper(trim(p_item));
 begin
- select u.email into email from auth.users u where u.id=p_actor and not coalesce(u.is_anonymous,false);
+ email:=p_email; -- Supplied only by the Edge Function after auth.getUser verifies the user.
  if email is null then raise exception 'Sign in to visit the store.'; end if;
  if p_operation not in ('get','pack','unlock','promo') then raise exception 'Unknown store operation.'; end if;
  -- Serialize account creation and every purchase, including requests from multiple tabs.
@@ -128,6 +132,6 @@ begin
   'rarities',(select jsonb_object_agg(id,store_catalog.rarity) from public.store_catalog),
   'receipts',(select coalesce(jsonb_agg(to_jsonb(x)),'[]') from (select request_id,operation,item,cards,cost,created_at from public.store_receipts where user_id=p_actor order by created_at desc limit 12)x));
 end $$;
-revoke all on function public.store_request(uuid,text,text,uuid) from public,anon,authenticated;
-grant execute on function public.store_request(uuid,text,text,uuid) to service_role;
+revoke all on function public.store_request(uuid,text,text,uuid,text) from public,anon,authenticated;
+grant execute on function public.store_request(uuid,text,text,uuid,text) to service_role;
 commit;

@@ -14,7 +14,7 @@ Deno.serve(async req => {
   if(raw.length>1024) return reply({error:'Request too large.'},413);
   const b=JSON.parse(raw);
   if(!['get','pack','unlock','promo'].includes(b.op)||typeof (b.item??'')!=='string'||(b.item??'').length>80|| (b.op!=='get'&&!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(b.requestId))) return reply({error:'Invalid store request.'},400);
-  const {data,error}=await db.rpc('store_request',{p_actor:auth.user.id,p_operation:b.op,p_item:b.item??'',p_request:b.requestId??null});
+  const {data,error}=await db.rpc('store_request',{p_actor:auth.user.id,p_operation:b.op,p_item:b.item??'',p_request:b.requestId??null,p_email:auth.user.email});
   if(error) return reply({error:error.code==='P0001'?error.message:'Store unavailable. Please retry.'},error.code==='P0001'?422:503);
   return reply(data);
  } catch {return reply({error:'Invalid store request.'},400);}
