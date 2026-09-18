@@ -1,4 +1,4 @@
-export const BALANCE_VERSION = '0.3 • 2026-09-16';
+export const BALANCE_VERSION = '0.4 • 2026-09-17';
 // Playtest tuning. Keep the supplied database intact for before/after comparisons.
 export const balancePatch = {
   'Flame Dragon': { description: 'Creature protection applies: defeat shield creatures, then other creatures, before attacking a Controller. Can bypass this order only if it gains Stealth.', reason: 'The confirmed protection rule allows only creature Stealth to bypass defenders.' },

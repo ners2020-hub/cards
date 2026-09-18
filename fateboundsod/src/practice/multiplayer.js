@@ -56,7 +56,7 @@ export function playerView(state, seat) {
     for (const zone of ['controllers', 'creatures', 'artifacts', 'spells']) view[zone] = s[zone].map(unitView);
     g[side === seat ? 'playerState' : 'opponentState'] = view;
   }
-  if (state.pendingChoice?.side === seat) g.pendingChoice = pick(state.pendingChoice, ['prompt', 'options']);
+  if (state.pendingChoice?.side === seat) g.pendingChoice = pick(state.pendingChoice, ['prompt', 'options', 'kind']);
   // Adapt seat labels for the existing arena; UIDs remain authoritative and unchanged.
   function translate(value) {
     if (Array.isArray(value)) return value.map(translate);

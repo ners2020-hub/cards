@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "test:turn-economy": "node scripts/test-turn-economy.mjs",
     "test:rules": "node scripts/test-abilities.mjs",
     "test:multiplayer": "node scripts/test-multiplayer.mjs",
     "test:protection": "node scripts/test-controller-protection.mjs",

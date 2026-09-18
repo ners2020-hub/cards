@@ -32,3 +32,7 @@ Games are held in memory and reset on refresh. Artwork uses the supplied remote 
 - Browser checks: controller summon synergy, creature aura, equipment target selection and AP bonus, activated ability choice/status, end-phase destruction and AI turn progression.
 
 The tests cover representative mechanics and controller safety; they do not exhaust every possible card pairing. The earlier `practiceEngine.js` and `test-practice.mjs` are legacy base-stat prototype files; the live UI now imports `rulesEngine.js` and the primary suite is `test:rules`.
+
+## Rules 0.4
+Gain 2 shards per own Energy Phase. After end-of-turn effects, choose excess hand cards to discard until 7 remain. Drawing above 7 during the turn is allowed. Discarded cards enter the graveyard. AI follows the same limit.
+

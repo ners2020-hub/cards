@@ -296,7 +296,7 @@ function attackUnit(g, side, source, target, input) {
 function advance(g, side, input) {
   const ctx = context(g, side, null, input);
   if (g.phase === 'draw') { ctx.draw(); g.phase = 'energy'; }
-  else if (g.phase === 'energy') { ctx.gain(1 + g[side].nextShards); g[side].nextShards = 0; g.phase = 'main'; }
+  else if (g.phase === 'energy') { ctx.gain(2 + g[side].nextShards); g[side].nextShards = 0; g.phase = 'main'; }
   else if (g.phase === 'main') g.phase = 'combat';
   else {
     emit(g, 'turnEnd', side, input, side);
@@ -313,6 +313,19 @@ function advance(g, side, input) {
     g[side].shards = Math.max(0, g[side].shards - g[side].temporaryShards); g[side].temporaryShards = 0;
     for (const key of Object.keys(g[side].locks)) g[side].locks[key] = Math.max(0, g[side].locks[key] - 1);
     for (const key of Object.keys(g[side].banned)) g[side].banned[key] = Math.max(0, g[side].banned[key] - 1);
+    // End effects resolve before the hand limit. Replayed choices identify each copy.
+    recalc(g);
+    input.handLimit = true;
+    while (g[side].hand.length > 7 && !outcome(g)) {
+      const card = select(ctx, `Discard to 7 cards: choose ${g[side].hand.length - 7} more.`, g[side].hand.map(card => ({
+        id: card.instanceId, label: `${card.name} (${card.cost} shards)`, card, value: card,
+        score: card.cost || 0,
+      })));
+      g[side].hand.splice(g[side].hand.indexOf(card), 1);
+      g[side].graveyard.push(card);
+      note(g, `${side === 'playerState' ? 'You' : 'Opponent'} discarded ${card.name} (hand limit).`);
+    }
+    input.handLimit = false;
     g.turnNumber++; g.isMyTurn = !g.isMyTurn; g.phase = 'draw';
     const next = other(side); g[next].turns++;
     g[next].flags.recalled = 0;
@@ -376,7 +389,7 @@ export function performMove(state, move, choices = [], auto = false) {
     }
     return g;
   } catch (error) {
-    if (error instanceof Choice) return { ...state, pendingChoice: { move, auto, side: error.side, choices: input.choices.slice(0, input.cursor - 1), prompt: error.message, options: error.options } };
+    if (error instanceof Choice) return { ...state, pendingChoice: { move, auto, kind: input.handLimit ? 'handLimit' : 'effect', side: error.side, choices: input.choices.slice(0, input.cursor - 1), prompt: error.message, options: error.options } };
     throw error;
   }
 }

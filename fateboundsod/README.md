@@ -2,7 +2,7 @@
 
 The latest balanced local game, solo arena and invite-only multiplayer playtest.
 
-- `/` or `/practice`: solo arena using balance patch 0.3.
+- `/` or `/practice`: solo arena using balance patch 0.4.
 - `/multiplayer`: authenticated invite-only rooms using the same rules, with server-authoritative actions and private player views.
 - Legacy game links such as `/TCG` and `/TCGMainMenu` redirect to the current solo arena. `/login` and `/Profile` open the current multiplayer account screen. The legacy interface is no longer served.
 - `/store` (also `/Shop`): token packs, collection, promo rewards and deck unlocks. See [STORE.md](STORE.md).
