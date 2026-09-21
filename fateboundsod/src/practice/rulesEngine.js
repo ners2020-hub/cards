@@ -81,6 +81,7 @@ function remove(g, unit, cause, input, killer = null) {
   if (cause === 'spell' && (unit.traits?.spellImmune || (unit.zone === 'artifacts' && field(g, unit.side).some(u => u.card.name === 'Earth Knight' && !suppressed(u))) || (unit.zone === 'spells' && sides.some(s => g[s].spells.some(u => u?.card.name === 'Divine Elemental Convergence'))))) return false;
   if (cause === 'sacrifice' && unit.traits?.cannotSacrifice) throw new Error(`${unit.card.name} cannot be sacrificed.`);
   g[loc.side][loc.zone][loc.index] = null;
+  if (unit.zone === 'controllers') g[unit.owner].controllersLost = (g[unit.owner].controllersLost || 0) + 1;
   const attachments = [...g[unit.side].artifacts, ...g[unit.side].spells].filter(a => a?.target === unit.uid);
   for (const a of attachments) {
     if (a.card.name === 'Vampiric Destiny') { a.flags.returnCard = clone(unit.card); a.flags.returnOwner = unit.owner; a.flags.returnTurn = g.turnNumber; a.target = null; }
@@ -435,7 +436,7 @@ export function newMatch(element, enemy, controllerName, enemyControllerName, se
     for (let n = deck.length - 1; n > 0; n--) { const j = Math.floor(random(g) * (n + 1)); [deck[n], deck[j]] = [deck[j], deck[n]]; }
     // Opening hands include each card type so the rules are easy to explore.
     const hand = ['creature', 'creature', 'spell', 'artifact', 'creature'].map(type => { const index = deck.findIndex(c => c.card_type === type); return deck.splice(index, 1)[0]; });
-    g[side] = { shards: 10, controllers: [null, null, null], creatures: Array(5).fill(null), artifacts: Array(3).fill(null), spells: Array(3).fill(null), hand, deck, graveyard: [], void: [], banished: [], flags: {}, locks: {}, banned: {}, turns: 1, temporaryShards: 0, nextShards: 0 };
+    g[side] = { controllersLost: 0, shards: 10, controllers: [null, null, null], creatures: Array(5).fill(null), artifacts: Array(3).fill(null), spells: Array(3).fill(null), hand, deck, graveyard: [], void: [], banished: [], flags: {}, locks: {}, banned: {}, turns: 1, temporaryShards: 0, nextShards: 0 };
   }
   for (const [i, side] of sides.entries()) {
     const el = i ? enemy : element; const name = i ? enemyControllerName : controllerName;

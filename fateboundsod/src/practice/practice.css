@@ -11,3 +11,5 @@
 
 .status-explainer{cursor:help;pointer-events:auto!important;z-index:6;text-align:center}.status-explainer:focus-visible{outline:2px solid #fff;outline-offset:-2px}.active-effects{margin:20px 0;padding:18px;border:1px solid #bda4e24d;background:#b499d80a;border-radius:8px}.active-effects h3{font:20px Georgia,serif;color:#e6d2ff;margin-bottom:12px}.active-effects article{padding:12px 0;border-top:1px solid #ffffff14}.active-effects h4{font-weight:600;color:#ead8b3;margin-bottom:6px}.active-effects small{color:#b6a5ca;font-size:11px;line-height:1.6;display:block}.active-effects p{margin-bottom:7px}
 
+
+.match-reward{border:1px solid #665b42;background:#191b25;padding:20px;border-radius:12px;margin:18px 0}.match-reward a{color:#edda97}

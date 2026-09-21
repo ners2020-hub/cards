@@ -21,7 +21,7 @@ export function applyAction(state, seat, action) {
   if (state.pendingChoice) {
     if (state.pendingChoice.side !== seat || action.type !== 'choice') throw new Error('Waiting for the designated player to choose.');
     if (typeof action.id !== 'string' || !state.pendingChoice.options.some(o => o.id === action.id)) throw new Error('Invalid choice.');
-    return resolveChoice(state, action.id);
+    return finishResult(resolveChoice(state, action.id));
   }
   if ((state.isMyTurn ? SIDES[0] : SIDES[1]) !== seat) throw new Error('It is not your turn.');
   const allowed = { advance: ['type'], play: ['type', 'index', 'slot', 'fromGraveyard'], attack: ['type', 'source', 'target'], ability: ['type', 'source', 'index'] };
@@ -29,7 +29,9 @@ export function applyAction(state, seat, action) {
   for (const key of ['index', 'slot']) if (action[key] !== undefined && (!Number.isInteger(action[key]) || action[key] < 0 || action[key] > 500)) throw new Error('Invalid selection.');
   for (const key of ['source', 'target']) if (action[key] !== undefined && (typeof action[key] !== 'string' || !/^u\d+$/.test(action[key]))) throw new Error('Invalid unit.');
   if (action.fromGraveyard !== undefined && typeof action.fromGraveyard !== 'boolean') throw new Error('Invalid source.');
-  const next = performMove(state, action);
+  return finishResult(performMove(state, action));
+}
+function finishResult(next) {
   const result = outcome(next);
   if (result) next.finished = { winner: result === 'Draw' ? null : result === 'Victory' ? SIDES[0] : SIDES[1], reason: 'controllers defeated' };
   return next;

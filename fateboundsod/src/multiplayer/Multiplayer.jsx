@@ -92,7 +92,7 @@ function Multiplayer() {
   const mine = room?.seat === 'playerState' ? room?.hostDeck : room?.guestDeck;
   const theirs = room?.seat === 'playerState' ? room?.guestDeck : room?.hostDeck;
   return <>
-    {room?.game && <Practice remote={{ game: { ...room.game, log: room.history.map(e => `Turn ${e.turn} · ${e.actor === room.seat ? 'You' : 'Rival'}: ${e.type}${e.pending ? ' (choosing)' : ''}`) }, version: room.version, busy: busy || !!pending.current, element: mine.element, enemy: theirs.element, act, leave }} />}
+    {room?.game && <Practice remote={{ matchId: room.id, game: { ...room.game, log: room.history.map(e => `Turn ${e.turn} · ${e.actor === room.seat ? 'You' : 'Rival'}: ${e.type}${e.pending ? ' (choosing)' : ''}`) }, version: room.version, busy: busy || !!pending.current, element: mine.element, enemy: theirs.element, act, leave }} />}
     <section className={room?.game ? 'mp-status' : 'mp-shell'}>
       {!room?.game && <><a href="/">← Solo arena</a><a href="/store">Card store →</a><h1>Invite-only multiplayer</h1><p>Balanced rules 0.4 · Fixed test decks · Private two-player rooms</p><button onClick={() => run(signOut)}>Sign out</button></>}
       {room && <p>{connected ? 'Live updates connected' : 'Reconnecting; checking for updates'} · {opponentOnline ? 'Rival online' : 'Rival offline'} · Version {room.version}</p>}

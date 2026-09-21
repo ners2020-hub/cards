@@ -41,7 +41,7 @@ declare
  a public.store_accounts; old public.playerprogress; receipt public.store_receipts; promo public.promocode;
  email text; entry jsonb; cid text; qty integer; owned jsonb:='{}'; unknown_cards jsonb:='[]';
  drawn jsonb:='[]'; price integer:=0; r double precision; picked_rarity text; i integer; requirement text;
- wins integer; deck_wins jsonb; winrow record; result jsonb; normalized text:=upper(trim(p_item));
+ wins integer; deck_wins jsonb; winrow record; result jsonb; rewards jsonb; normalized text:=upper(trim(p_item));
 begin
  email:=p_email; -- Supplied only by the Edge Function after auth.getUser verifies the user.
  if email is null then raise exception 'Sign in to visit the store.'; end if;
@@ -67,9 +67,15 @@ begin
   values(p_actor,greatest(0,coalesce(old.tokens,100)),owned,coalesce(old.unlocked_decks,'["fire","water","earth","wind"]'),greatest(0,coalesce(old.total_wins,0)),coalesce(old.deck_wins,'{}'),unknown_cards)
   returning * into a;
  end if;
+ rewards:=public.reward_sync(p_actor);
+ select * into a from public.store_accounts where user_id=p_actor;
  wins:=a.legacy_wins; deck_wins:=a.legacy_deck_wins;
  for winrow in select case when host_id=p_actor then host_deck->>'element' else guest_deck->>'element' end element,count(*)::integer n
   from public.mp_matches where status='finished' and ((host_id=p_actor and state->'finished'->>'winner'='playerState') or (guest_id=p_actor and state->'finished'->>'winner'='opponentState')) group by 1 loop
+  wins:=wins+winrow.n;
+  deck_wins:=jsonb_set(deck_wins,array[winrow.element],to_jsonb(coalesce((deck_wins->>winrow.element)::integer,0)+winrow.n));
+ end loop;
+ for winrow in select mr.element,count(*)::integer n from public.match_rewards mr where mr.user_id=p_actor and mr.mode='ai' and mr.result='Victory' group by mr.element loop
   wins:=wins+winrow.n;
   deck_wins:=jsonb_set(deck_wins,array[winrow.element],to_jsonb(coalesce((deck_wins->>winrow.element)::integer,0)+winrow.n));
  end loop;
@@ -127,7 +133,7 @@ begin
    insert into public.store_receipts(user_id,request_id,operation,item,cards,cost) values(p_actor,p_request,p_operation,p_item,drawn,price);
   end if;
  end if;
- return jsonb_build_object('tokens',a.tokens,'owned',a.owned,'unlocked',a.unlocked,'wins',wins,'deckWins',deck_wins,'cards',drawn,'cost',price,
+ return jsonb_build_object('tokens',a.tokens,'rewards',rewards,'owned',a.owned,'unlocked',a.unlocked,'wins',wins,'deckWins',deck_wins,'cards',drawn,'cost',price,
   'unmappedLegacyCount',jsonb_array_length(a.unmapped_legacy),
   'rarities',(select jsonb_object_agg(id,store_catalog.rarity) from public.store_catalog),
   'receipts',(select coalesce(jsonb_agg(to_jsonb(x)),'[]') from (select request_id,operation,item,cards,cost,created_at from public.store_receipts where user_id=p_actor order by created_at desc limit 12)x));

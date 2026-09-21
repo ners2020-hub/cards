@@ -1,0 +1,43 @@
+begin;
+do $$
+declare a uuid:=gen_random_uuid(); b uuid:=gen_random_uuid(); m uuid:=gen_random_uuid(); solo uuid:=gen_random_uuid(); wallet jsonb; baseline integer; count_before integer;
+begin
+ insert into auth.users(id,email,is_anonymous) values(a,a::text||'@example.invalid',false),(b,b::text||'@example.invalid',false);
+ set local role service_role;
+ wallet:=public.store_request(a,p_email=>a::text||'@example.invalid');
+ assert (wallet->>'tokens')::integer=100,'Initial wallet';
+ insert into public.mp_matches(id,host_id,guest_id,invite_hash,host_deck,guest_deck,balance_version,status,state)
+ values(m,a,b,m::text,'{"element":"fire"}','{"element":"water"}','0.4','active','{}');
+ update public.mp_matches set status='finished',state='{"finished":{"winner":"playerState","reason":"controllers defeated"},"playerState":{"graveyard":[]},"opponentState":{"graveyard":[]}}' where id=m;
+ assert (select count(*) from public.match_rewards where match_id=m)=2,'Both participants recorded atomically';
+ assert (select tokens from public.match_rewards where match_id=m and user_id=a)=30,'PvP win pays 30';
+ assert (select tokens from public.match_rewards where match_id=m and user_id=b)=0,'Loss receives no base payout';
+ update public.mp_matches set version=version+1 where id=m;
+ assert (select count(*) from public.match_rewards where match_id=m)=2,'Finished retries do not duplicate';
+ -- Force known assigned quests for deterministic transaction assertions.
+ update public.reward_quests set metric='games',target=1,tokens=75,xp=40 where user_id=a and period='day';
+ update public.reward_quests set target=999 where user_id=a and period='week';
+ wallet:=public.store_request(a,p_email=>a::text||'@example.invalid');
+ assert (wallet->>'tokens')::integer=205,'Match and daily quest credited together';
+ assert (wallet->'rewards'->>'xp')::integer=40,'Quest XP credited';
+ assert (public.store_request(a,p_email=>a::text||'@example.invalid')->>'tokens')::integer=205,'Repeated sync is idempotent';
+ wallet:=public.store_request(b,p_email=>b::text||'@example.invalid');
+ assert (wallet->'rewards'->>'games')::integer=1,'Offline loser receives played-match progress when returning';
+ perform public.solo_reward_start(solo,a,'{"mine":{"element":"fire"}}',42,'0.4');
+ perform public.solo_reward_finish(solo,a,'Victory',true);
+ perform public.solo_reward_finish(solo,a,'Victory',true);
+ wallet:=public.store_request(a,p_email=>a::text||'@example.invalid');
+ assert (wallet->>'tokens')::integer=215,'AI win pays 10 exactly once';
+ assert (wallet->>'wins')::integer=2 and (wallet->'deckWins'->>'fire')::integer=2,'AI and PvP count once toward unlocks';
+ wallet:=public.store_request(a,'pack','starter',gen_random_uuid(),a::text||'@example.invalid');
+ assert (wallet->>'tokens')::integer=165 and jsonb_array_length(wallet->'cards')=5,'Earned tokens spend through existing store';
+ assert public.reward_quest_progress(a,'elements',now()-interval '1 day',now()+interval '1 day')=1,'Distinct elements count once';
+ assert public.reward_quest_progress(a,'perfect_wins',now()-interval '1 day',now()+interval '1 day')=2,'Perfect wins counted';
+ begin perform public.solo_reward_finish(solo,b,'Victory',true);raise exception 'FAIL unauthorized solo finish';exception when raise_exception then if sqlerrm like 'FAIL%' then raise;end if;end;
+ reset role;
+ assert not has_table_privilege('authenticated','public.match_rewards','INSERT'),'Clients cannot mint results';
+ assert not has_function_privilege('authenticated','public.solo_reward_finish(uuid,uuid,text,boolean)','EXECUTE'),'Clients cannot mint payouts';
+ assert not has_function_privilege('anon','public.reward_sync(uuid)','EXECUTE'),'Anonymous cannot select another wallet';
+end $$;
+select 'Reward transactions, duplicate protection, quest XP, store spending, unlocks and authorization passed' as result;
+rollback;

@@ -7,6 +7,8 @@ import { DEFAULT_RULES } from './catalog.js';
 import './practice.css';
 import { useBattlePlayback } from './useBattlePlayback';
 import { describeStatus } from './statusDescriptions';
+import { supabase } from '../lib/supabaseClient';
+import RewardSummary, { rewardRequest } from '../store/RewardSummary';
 
 const colors = { fire: '#f4a261', cryo: '#88d9f5', blood: '#ec708c', wind: '#89d4bb', earth: '#b4bd7f', water: '#82aaff', shadow: '#bf9ee8', light: '#edda97', electric: '#e5cd66' };
 function Card({ card, instance, onClick, selected, ready, onInspect, onAbility, cost }) {
@@ -53,6 +55,10 @@ function Modal({ title, onClose, children, wide = false }) {
   </section></div>;
 }
 export default function Practice({ remote = null }) {
+  const soloReward = useRef(null);
+  const starting = useRef(false);
+  const [startingGame, setStartingGame] = useState(false);
+  const [startError, setStartError] = useState('');
   const [element, setElement] = useState('fire');
   const [enemy, setEnemy] = useState('cryo');
   const [controller, setController] = useState('Draco Alec');
@@ -97,7 +103,28 @@ export default function Practice({ remote = null }) {
     tone.frequency.setValueAtTime(kind === 'attack' ? 150 : 440, ctx.currentTime); tone.frequency.exponentialRampToValueAtTime(70, ctx.currentTime + .25);
     gain.gain.setValueAtTime(.06, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + .3); tone.start(); tone.stop(ctx.currentTime + .3);
   }
-  function begin() { if (remote) { playback.reset(); remote.leave(); return; } generation.current++; setBusy(false); playback.reset(newMatch(element, enemy, controller, enemyController)); setSelection(null); setInspect(null); setAbilityUnit(null); setNotice('Draw a card to begin your turn.'); pulse('The duel begins'); }
+  async function begin() {
+    if (remote) { playback.reset(); remote.leave(); return; }
+    if (starting.current) return;
+    starting.current = true; setStartingGame(true); setStartError('');
+    const token = ++generation.current;
+    try {
+      const { data, error } = await supabase.auth.getSession();
+      if (error) throw error;
+      let seed = Date.now(); soloReward.current = null;
+      if (data.session?.user && !data.session.user.is_anonymous) {
+        const pendingKey = `fatebound.pendingReward.${data.session.user.id}`;
+        const previous = JSON.parse(localStorage.getItem(pendingKey) || 'null');
+        if (previous) { await rewardRequest(previous); localStorage.removeItem(pendingKey); }
+        const session = await rewardRequest({ op: 'start', id: crypto.randomUUID(), config: { mine: { element, controller }, enemy: { element: enemy, controller: enemyController }, difficulty } });
+        if (token !== generation.current) return;
+        seed = session.seed; soloReward.current = { id: session.id, userId: data.session.user.id, actions: [] };
+      }
+      if (token !== generation.current) return;
+      setBusy(false); playback.reset(newMatch(element, enemy, controller, enemyController, seed)); setSelection(null); setInspect(null); setAbilityUnit(null); setNotice('Draw a card to begin your turn.'); pulse('The duel begins');
+    } catch { setStartError('Could not start a reward match. Check your connection and try again.'); }
+    finally { starting.current = false; setStartingGame(false); }
+  }
   function leave() { if (remote) { playback.reset(); remote.leave(); return; } generation.current++; setBusy(false); playback.reset(null); setSelection(null); setAbilityUnit(null); }
   async function runOpponent(state) {
     if (state.isMyTurn || state.pendingChoice || outcome(state)) return;
@@ -126,9 +153,9 @@ export default function Practice({ remote = null }) {
   function move(action) {
     if (!game || busy || playback.locked.current || winner || !game.isMyTurn || game.pendingChoice || game.waitingForChoice) return;
     if (remote) { void remote.act(action); return; }
-    try { accept(performMove(game, action)); } catch (error) { setNotice(error.message); }
+    try { const next = performMove(game, action); soloReward.current?.actions.push(action); void accept(next); } catch (error) { setNotice(error.message); }
   }
-  function choose(id) { if (playback.locked.current) return; if (remote) { if (!remote.busy) void remote.act({ type: "choice", id }); return; } try { accept(resolveChoice(game, id)); } catch (error) { setGame(cancelChoice(game)); setNotice(error.message); } }
+  function choose(id) { if (playback.locked.current) return; if (remote) { if (!remote.busy) void remote.act({ type: "choice", id }); return; } try { const next = resolveChoice(game, id); soloReward.current?.actions.push({ type: 'choice', id }); void accept(next); } catch (error) { setNotice(error.message); } }
   function unitClick(unit) {
     if (busy || winner || game.pendingChoice) return;
     if (selection?.type === 'attack') { move({ type: 'attack', source: selection.uid, target: unit.uid }); return; }
@@ -160,7 +187,7 @@ export default function Practice({ remote = null }) {
       <div className="lobby-options"><label>Your controller<select value={controller} onChange={e => setController(e.target.value)}>{cards.filter(c => c.element === element && c.card_type === 'controller').map(c => <option key={c.id}>{c.name}</option>)}</select></label></div>
       <div className="lobby-options"><label>Opponent<select value={enemy} onChange={e => { setEnemy(e.target.value); setEnemyController(cards.find(c => c.element === e.target.value && c.card_type === 'controller').name); }}>{elements.map(e => <option key={e}>{e}</option>)}</select></label><label>Difficulty<select value={difficulty} onChange={e => setDifficulty(e.target.value)}>{['easy', 'medium', 'hard'].map(e => <option key={e}>{e}</option>)}</select></label></div>
       <div className="lobby-options"><label>Opponent controller<select value={enemyController} onChange={e => setEnemyController(e.target.value)}>{cards.filter(c => c.element === enemy && c.card_type === 'controller').map(c => <option key={c.id}>{c.name}</option>)}</select></label></div>
-      <button className="primary enter" onClick={begin}>Enter the arena <ArrowRight size={20} /></button><p className="scope-note">Solo rules preview. Review the Rules guide and each card’s interpretation notes for timing defaults and reaction handling.</p>
+      <button className="primary enter" disabled={startingGame} onClick={begin}>{startingGame ? 'Opening arena…' : 'Enter the arena'} <ArrowRight size={20} /></button><p role="status">{startError}</p><p className="scope-note">Sign in before starting to earn 10 tokens per AI win and quest progress. Guest games are practice only.</p>
     </section><section className="hero-display"><div className="orbit orbit-one" /><div className="orbit orbit-two" /><div className="hero-card"><Card key={hero.id} card={hero} onClick={() => setInspect(hero)} onInspect={setInspect} /></div><div className="hero-caption"><span>YOUR CONTROLLER</span><h2>{hero.name}</h2><p>{element} dominion</p></div></section></main> :
     <main className="arena-layout"><section className="arena ability-arena"><div className="arena-top"><button onClick={leave}><ArrowLeft size={16} /> Leave duel</button><span>THE SHATTERED SANCTUM</span>{remote ? <button disabled={remote.busy || !!winner} onClick={() => remote.act({ type: "concede" })}>Concede</button> : <button onClick={begin}>Restart</button>}</div>
       {['opponentState', 'playerState'].map(side => { const state = game[side]; const mine = side === 'playerState'; return <section className={`army ${mine ? 'friendly' : 'enemy'}`} key={side}>
@@ -176,9 +203,9 @@ export default function Practice({ remote = null }) {
     </section><aside className="duel-sidebar"><div className="eyebrow">DUEL STATUS</div><h2>{winner || (busy ? 'Rival’s turn' : 'Your move')}</h2><div className="phase-list">{['draw', 'energy', 'main', 'combat'].map((phase, i) => <div className={game.phase === phase ? 'current' : ''} key={phase}><span>0{i + 1}</span>{phase}<Diamond size={12} /></div>)}</div>
       <button className="primary" disabled={busy || !!winner || !!game.pendingChoice || game.waitingForChoice || !game.isMyTurn} onClick={() => move({ type: 'advance' })}>{({ draw: 'Draw card', energy: 'Gain 2 shards', main: 'Begin combat', combat: 'End turn' })[game.phase]}<ArrowRight size={17} /></button><p className="notice" role="status">{notice}</p>{selection && <button onClick={() => setSelection(null)}>Cancel selection</button>}<div className="log-heading">BATTLE LOG</div><div className="battle-log">{game.log.slice(-15).reverse().map((line, i) => <p key={`${i}-${line}`}>{line}</p>)}</div><p className="scope-note">✦ on a unit opens its activated abilities. Inspect cards for printed text and rule notes.</p>
     </aside></main>}
-    {game?.pendingChoice && !winner && <Modal title={game.pendingChoice.prompt} wide onClose={(remote || game.pendingChoice.auto || game.pendingChoice.kind === 'handLimit') ? undefined : () => { setGame(cancelChoice(game)); setNotice('Action cancelled; no costs paid.'); }}><div className="eyebrow">RESOLVE EFFECT</div><h2>{game.pendingChoice.prompt}</h2><p>{game.pendingChoice.kind === 'handLimit' ? 'Choose cards one at a time to discard. Your turn ends after your hand is reduced to seven.' : 'Choose below. Costs are committed only when the whole action resolves.'}</p><div className="choice-grid">{game.pendingChoice.options.map(option => <button key={option.id} onClick={() => choose(option.id)}>{option.card?.image_url && <img src={option.card.image_url} alt="" />}<span>{option.label}</span></button>)}</div></Modal>}
+    {game?.pendingChoice && !winner && <Modal title={game.pendingChoice.prompt} wide onClose={(remote || game.pendingChoice.auto || game.pendingChoice.kind === 'handLimit') ? undefined : () => { soloReward.current?.actions.push({ type: 'cancel' }); setGame(cancelChoice(game)); setNotice('Action cancelled; no costs paid.'); }}><div className="eyebrow">RESOLVE EFFECT</div><h2>{game.pendingChoice.prompt}</h2><p>{game.pendingChoice.kind === 'handLimit' ? 'Choose cards one at a time to discard. Your turn ends after your hand is reduced to seven.' : 'Choose below. Costs are committed only when the whole action resolves.'}</p><div className="choice-grid">{game.pendingChoice.options.map(option => <button key={option.id} onClick={() => choose(option.id)}>{option.card?.image_url && <img src={option.card.image_url} alt="" />}<span>{option.label}</span></button>)}</div></Modal>}
     {abilityUnit && !game?.pendingChoice && <Modal title={`${abilityUnit.card.name} abilities`} onClose={() => setAbilityUnit(null)}><div className="eyebrow">ACTIVATED ABILITIES</div><h2>{abilityUnit.card.name}</h2><p>{abilityUnit.card.description}</p>{abilityList(abilityUnit).map((ab, index) => <button className="ability-action" disabled={busy || game.phase !== 'main' || !game.isMyTurn || abilityUnit.used[index]} key={ab.label} onClick={() => move({ type: 'ability', source: abilityUnit.uid, index })}><strong>{ab.label}</strong><span>{ab.cost || 0} shards{ab.ch ? ` + ${ab.ch} controller CH` : ''} · {abilityUnit.used[index] ? 'Used this turn' : 'Once per turn'}</span></button>)}</Modal>}
-    {winner && <Modal title={winner} onClose={leave}><div className="eyebrow">DUEL COMPLETE</div><h2>{winner}</h2><p>{winner === 'Victory' ? 'Your opponent’s controller has fallen.' : winner === 'Draw' ? 'Both controllers fell in battle.' : 'Your controller has fallen. Try a different strategy.'}</p><button className="primary" onClick={begin}>Play again</button><button onClick={leave}>Choose another deck</button></Modal>}
+    {winner && <Modal title={winner} onClose={leave}><div className="eyebrow">DUEL COMPLETE</div><h2>{winner}</h2><p>{winner === 'Victory' ? 'Your opponent’s controller has fallen.' : winner === 'Draw' ? 'Both controllers fell in battle.' : 'Your controller has fallen. Try a different strategy.'}</p><p role="status">{startError}</p>{remote?.matchId || soloReward.current ? <RewardSummary matchId={remote?.matchId || soloReward.current.id} solo={remote ? null : soloReward.current} /> : <p>Guest practice · Sign in before your next match to earn rewards.</p>}<button className="primary" disabled={startingGame} onClick={begin}>Play again</button><button onClick={leave}>Choose another deck</button></Modal>}
     {library && !inspect && <Modal title="Card ability library" wide onClose={() => setLibrary(false)}><div className="eyebrow">THE COMPLETE COLLECTION</div><h2>Card ability library</h2><div className="library-filters"><input aria-label="Search cards and abilities" placeholder="Search names, abilities, or card types…" value={query} onChange={e => setQuery(e.target.value)} /><select aria-label="Filter by element" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">All elements</option>{elements.map(e => <option key={e}>{e}</option>)}</select></div><p>{shown.length} of {cards.length} cards</p><div className="library-list">{shown.map(card => <button key={card.id} onClick={() => setInspect(card)}><strong>{card.name}<small>{card.element} · {card.card_type} · {card.cost} shards</small></strong><span>{card.description}</span></button>)}</div></Modal>}
     {inspect && <Modal title={inspect.name} onClose={() => setInspect(null)}><div className="eyebrow">{inspect.id}</div><h2>{inspect.name}</h2><p>{inspect.element} · {inspect.card_type} · {inspect.cost} shards</p>{inspect.image_url && <img className="inspect-image" src={inspect.image_url} alt={inspect.name} />}<p>{inspect.description}</p>{inspectedUnit && <section className="active-effects"><h3>On this card now</h3><p><strong>{inspectedUnit.currentAP} attack · {inspectedUnit.currentCH} / {inspectedUnit.maxCH} health</strong></p>{activeEffects.length ? activeEffects.map(s => <article key={s.name}><h4>{s.name}</h4><p>{s.description}</p><small>{s.duration}</small></article>) : <p>No active status effects.</p>}</section>}{definitions[inspect.name]?.active?.map(ab => <p key={ab.label}><strong>{ab.label}</strong> — {ab.cost || 0} shards{ab.ch ? `, ${ab.ch} CH` : ''}; once per turn.</p>)}{interpretations[inspect.name] && <p className="interpretation-note">Rule interpretation: {interpretations[inspect.name]}</p>}</Modal>}
     {help && <Modal title="How to play" onClose={() => setHelp(false)}><div className="eyebrow">QUICK START</div><h2>A shard of strategy.</h2><ol><li>Draw a card, then gain two shards. Unspent shards carry over. At the end of your turn, choose cards to discard until you hold at most seven.</li><li>In main phase, select a creature and an empty slot. Click spells or artifacts to cast or equip, then choose targets in the effect dialog.</li><li>Click the ✦ button on your units to activate abilities. Each activated ability can be used once per owner turn.</li><li>In combat, select your unit and an enemy. Glowing units can attack. Attack shield creatures first, then other creatures, then controllers. Only creatures with Stealth can bypass this order. Attacks unlock on turn 3.</li><li>Artifacts and persistent spells remain in their own rows. Status badges show affected units. Destroy every enemy controller to win.</li></ol><h3>Approved rule defaults</h3>{DEFAULT_RULES.map(rule => <p key={rule}>{rule}</p>)}<h3>Reaction timing in this preview</h3><p>Wind Mirage and Ink Cloud are prepared during main phase, then intercept the next qualifying attack. There is no general instant-speed response stack yet.</p><button className="primary" onClick={() => setHelp(false)}>Understood</button></Modal>}
