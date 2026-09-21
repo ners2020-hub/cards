@@ -17,7 +17,7 @@ Solo starts receive a server-generated seed and immutable configuration. The rew
 
 The three new tables use RLS and have no client grants. Reward functions are security invoker with an empty search path and service-role-only execution. The store remains the only balance authority; browser code cannot write tokens or result records. Controllers lost in battle are counted even if subsequently revived. A lethal targeted choice now finalizes multiplayer state correctly.
 
-Fresh database installation order: existing multiplayer.sql, store.sql + store-catalog.sql, then rewards.sql, before serving requests. Existing projects use the recorded Supabase migrations. Deploy rewards and multiplayer with the canonical bundled rule modules.
+Fresh database installation order: existing multiplayer.sql, store.sql + store-catalog.sql, then rewards.sql and admin.sql, before serving requests. Existing projects use the recorded Supabase migrations. Deploy rewards and multiplayer with the canonical bundled rule modules.
 
 ## Checks
 

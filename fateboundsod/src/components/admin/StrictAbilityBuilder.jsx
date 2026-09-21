@@ -205,11 +205,11 @@ export default function StrictAbilityBuilder({ abilities = [], onChange, tokenCa
               </div>
             </div>
 
-            <Button onClick={() => editAbility(idx)} variant="ghost" size="sm" className="h-6 px-2 text-blue-400">
+            <Button type="button" onClick={() => editAbility(idx)} variant="ghost" size="sm" className="h-6 px-2 text-blue-400">
               Edit
             </Button>
 
-            <Button onClick={() => removeAbility(idx)} variant="ghost" size="sm" className="h-6 px-2 text-red-400">
+            <Button type="button" onClick={() => removeAbility(idx)} variant="ghost" size="sm" className="h-6 px-2 text-red-400">
               <Trash2 className="w-3 h-3" />
             </Button>
           </div>
@@ -644,13 +644,13 @@ export default function StrictAbilityBuilder({ abilities = [], onChange, tokenCa
         </div>
 
         <div className="flex gap-2">
-          <Button onClick={addOrUpdate} variant="default" size="sm" className="flex-1 bg-purple-600 hover:bg-purple-700 h-8">
+          <Button type="button" onClick={addOrUpdate} variant="default" size="sm" className="flex-1 bg-purple-600 hover:bg-purple-700 h-8">
             <Plus className="w-3 h-3 mr-1" />
             {editingIndex !== null ? 'Update' : 'Add'} Ability
           </Button>
 
           {editingIndex !== null && (
-            <Button
+            <Button type="button"
               onClick={() => { setEditingIndex(null); resetForm(); }}
               variant="outline"
               size="sm"

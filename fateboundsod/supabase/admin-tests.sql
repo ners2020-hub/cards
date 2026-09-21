@@ -1,0 +1,48 @@
+begin;
+do $$
+declare owner_id uuid:=gen_random_uuid(); stranger uuid:=gen_random_uuid(); code text:='OWNER_TEST_'||replace(gen_random_uuid()::text,'-','');
+ promo_code text:='PROMO_TEST_'||replace(gen_random_uuid()::text,'-',''); card_id text; body jsonb; result jsonb; wallet jsonb; initial_count integer;
+begin
+ insert into auth.users(id,email,is_anonymous) values(owner_id,owner_id::text||'@example.invalid',false),(stranger,stranger::text||'@example.invalid',false);
+ -- Temporary bootstrap fixture; rollback leaves the real owner code unclaimed.
+ delete from public.admin_owner_unlock;
+ insert into public.admin_owner_unlock(secret_hash) values(extensions.crypt(upper(code),extensions.gen_salt('bf',4)));
+ set local role service_role;
+ assert not public.admin_unlock(stranger,'wrong-code'),'Wrong code rejected';
+ begin perform public.admin_request(stranger,'{"op":"list"}');raise exception 'FAIL non-admin read';exception when raise_exception then if sqlerrm like 'FAIL%' then raise;end if;end;
+ wallet:=public.store_request(owner_id,'promo',code,gen_random_uuid(),owner_id::text||'@example.invalid');
+ assert (wallet->>'isAdmin')::boolean and (wallet->>'adminUnlocked')::boolean,'Store promo field unlocks owner';
+ assert (wallet->>'tokens')::integer=100,'Unlock does not mint currency';
+ assert public.admin_unlock(owner_id,lower(code)),'Owner retry is idempotent';
+ begin perform public.admin_unlock(stranger,code);raise exception 'FAIL second owner';exception when raise_exception then if sqlerrm like 'FAIL%' then raise;end if;end;
+ assert (select count(*) from public.game_admins where user_id in(owner_id,stranger))=1,'Only one claimant';
+ body:=jsonb_build_object('op','save_card','requestId',gen_random_uuid(),'version',0,'data',jsonb_build_object('code','TEST_DRAFT_'||left(owner_id::text,8),'name','Test Draft','card_type','creature','element','fire','rarity','common','cost',2,'ap',2,'ch',3,'description','Test','art_url','','abilities','[]'::jsonb,'keywords','[]'::jsonb));
+ result:=public.admin_request(owner_id,body);
+ assert (result->>'version')::integer=1,'Draft saved';
+ assert public.admin_request(owner_id,body)=result,'Lost response retry returns same save';
+ begin perform public.admin_request(owner_id,jsonb_set(body,'{requestId}',to_jsonb(gen_random_uuid())));raise exception 'FAIL stale draft';exception when raise_exception then if sqlerrm like 'FAIL%' then raise;end if;end;
+ begin perform public.admin_request(stranger,body);raise exception 'FAIL forged admin';exception when raise_exception then if sqlerrm like 'FAIL%' then raise;end if;end;
+ select id into card_id from public.store_catalog order by id limit 1;
+ body:=jsonb_build_object('op','save_promo','requestId',gen_random_uuid(),'version',-1,'data',jsonb_build_object('code',upper(promo_code),'tokens',25,'max_uses',2,'is_active',true,'expires_at','','description','Test promo','rewards',jsonb_build_array(jsonb_build_object('card_id',card_id,'quantity',2))));
+ result:=public.admin_request(owner_id,body);
+ assert public.admin_request(owner_id,body)=result,'Promo save idempotent';
+ wallet:=public.store_request(stranger,p_email=>stranger::text||'@example.invalid');
+ initial_count:=coalesce((wallet->'owned'->>card_id)::integer,0);
+ wallet:=public.store_request(stranger,'promo',promo_code,gen_random_uuid(),stranger::text||'@example.invalid');
+ assert (wallet->>'tokens')::integer=125 and (wallet->'owned'->>card_id)::integer=initial_count+2,'Current cards and tokens redeemed correctly';
+ assert not (wallet->>'isAdmin')::boolean,'Ordinary promo never grants admin';
+ body:=jsonb_set(jsonb_set(jsonb_set(body,'{requestId}',to_jsonb(gen_random_uuid())),'{version}','1'),'{data,is_active}','false');
+ perform public.admin_request(owner_id,body);
+ assert (select p.current_uses from public.promocode p where p.code=upper(promo_code))=1,'Editing preserves redemptions';
+ begin perform public.store_request(owner_id,'promo',promo_code,gen_random_uuid(),owner_id::text||'@example.invalid');raise exception 'FAIL disabled promo';exception when raise_exception then if sqlerrm like 'FAIL%' then raise;end if;end;
+ result:=public.admin_request(owner_id,'{"op":"list"}');
+ assert jsonb_array_length(result->'drafts')>=1 and jsonb_array_length(result->'promos')>=1,'Admin list works';
+ assert not (result::text like '%'||code||'%'),'Owner code never appears in admin response';
+ reset role;
+ assert not has_table_privilege('authenticated','public.game_admins','INSERT'),'Clients cannot grant roles';
+ assert not has_table_privilege('authenticated','public.admin_owner_unlock','SELECT'),'Clients cannot read owner secret';
+ assert not has_table_privilege('authenticated','public.promocode','UPDATE'),'Legacy profile role cannot update promos';
+ assert not has_function_privilege('authenticated','public.admin_request(uuid,jsonb)','EXECUTE'),'Admin service boundary required';
+end $$;
+select 'Owner claim, authorization, card drafts, stale edits, retries and live promo redemption passed' as result;
+rollback;

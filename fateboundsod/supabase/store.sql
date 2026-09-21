@@ -41,7 +41,7 @@ declare
  a public.store_accounts; old public.playerprogress; receipt public.store_receipts; promo public.promocode;
  email text; entry jsonb; cid text; qty integer; owned jsonb:='{}'; unknown_cards jsonb:='[]';
  drawn jsonb:='[]'; price integer:=0; r double precision; picked_rarity text; i integer; requirement text;
- wins integer; deck_wins jsonb; winrow record; result jsonb; rewards jsonb; normalized text:=upper(trim(p_item));
+ wins integer; deck_wins jsonb; winrow record; result jsonb; rewards jsonb; admin_activated boolean:=false; normalized text:=upper(trim(p_item));
 begin
  email:=p_email; -- Supplied only by the Edge Function after auth.getUser verifies the user.
  if email is null then raise exception 'Sign in to visit the store.'; end if;
@@ -79,6 +79,9 @@ begin
   wins:=wins+winrow.n;
   deck_wins:=jsonb_set(deck_wins,array[winrow.element],to_jsonb(coalesce((deck_wins->>winrow.element)::integer,0)+winrow.n));
  end loop;
+ if p_operation='promo' and public.admin_unlock(p_actor,p_item) then
+  admin_activated:=true;p_operation:='get';
+ end if;
  if p_operation<>'get' then
   if p_request is null then raise exception 'A purchase ID is required.'; end if;
   select * into receipt from public.store_receipts where user_id=p_actor and request_id=p_request;
@@ -113,11 +116,13 @@ begin
     select * into promo from public.promocode where code=normalized for update;
     if not found or not coalesce(promo.is_active,false) or (promo.expires_at is not null and promo.expires_at<=now()) or (promo.max_uses is not null and coalesce(promo.current_uses,0)>=promo.max_uses) then raise exception 'Promo code is unavailable.'; end if;
     if exists(select 1 from public.store_redemptions where user_id=p_actor and code=normalized) or exists(select 1 from public.promocode_redemption where code=normalized and user_email=email) then raise exception 'Promo code already redeemed.'; end if;
-    for winrow in select card_code,sum(quantity)::integer quantity from (
-      select card_code,quantity from public.promocode_reward where code=normalized
-      union all select value,1 from jsonb_array_elements_text(coalesce(promo.card_ids,'[]')) where not exists(select 1 from public.promocode_reward where code=normalized)
-    ) rewards group by card_code loop
-     select card_id into cid from public.store_legacy_cards where legacy_id=winrow.card_code;
+    for winrow in select card_code,sum(quantity)::integer quantity,bool_or(current_card) current_card from (
+      select card_id card_code,quantity,true current_card from public.store_promo_rewards where code=normalized
+      union all select card_code,quantity,false from public.promocode_reward where code=normalized and not exists(select 1 from public.store_promo_rewards where code=normalized)
+      union all select value,1,false from jsonb_array_elements_text(coalesce(promo.card_ids,'[]')) where not exists(select 1 from public.promocode_reward where code=normalized) and not exists(select 1 from public.store_promo_rewards where code=normalized)
+    ) promo_rewards group by card_code loop
+     if winrow.current_card then select id into cid from public.store_catalog where id=winrow.card_code;
+     else select card_id into cid from public.store_legacy_cards where legacy_id=winrow.card_code;end if;
      if cid is null or winrow.quantity<1 or winrow.quantity>100 then raise exception 'Promo rewards need updating. No code was consumed.'; end if;
      for i in 1..winrow.quantity loop drawn:=drawn||jsonb_build_array(cid); end loop;
     end loop;
@@ -133,7 +138,7 @@ begin
    insert into public.store_receipts(user_id,request_id,operation,item,cards,cost) values(p_actor,p_request,p_operation,p_item,drawn,price);
   end if;
  end if;
- return jsonb_build_object('tokens',a.tokens,'rewards',rewards,'owned',a.owned,'unlocked',a.unlocked,'wins',wins,'deckWins',deck_wins,'cards',drawn,'cost',price,
+ return jsonb_build_object('tokens',a.tokens,'isAdmin',exists(select 1 from public.game_admins where user_id=p_actor),'adminUnlocked',admin_activated,'rewards',rewards,'owned',a.owned,'unlocked',a.unlocked,'wins',wins,'deckWins',deck_wins,'cards',drawn,'cost',price,
   'unmappedLegacyCount',jsonb_array_length(a.unmapped_legacy),
   'rarities',(select jsonb_object_agg(id,store_catalog.rarity) from public.store_catalog),
   'receipts',(select coalesce(jsonb_agg(to_jsonb(x)),'[]') from (select request_id,operation,item,cards,cost,created_at from public.store_receipts where user_id=p_actor order by created_at desc limit 12)x));
