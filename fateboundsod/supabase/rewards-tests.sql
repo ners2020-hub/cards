@@ -11,7 +11,7 @@ begin
  update public.mp_matches set status='finished',state='{"finished":{"winner":"playerState","reason":"controllers defeated"},"playerState":{"graveyard":[]},"opponentState":{"graveyard":[]}}' where id=m;
  assert (select count(*) from public.match_rewards where match_id=m)=2,'Both participants recorded atomically';
  assert (select tokens from public.match_rewards where match_id=m and user_id=a)=30,'PvP win pays 30';
- assert (select tokens from public.match_rewards where match_id=m and user_id=b)=0,'Loss receives no base payout';
+ assert (select tokens from public.match_rewards where match_id=m and user_id=b)=5,'PvP loss pays 5';
  update public.mp_matches set version=version+1 where id=m;
  assert (select count(*) from public.match_rewards where match_id=m)=2,'Finished retries do not duplicate';
  -- Force known assigned quests for deterministic transaction assertions.
@@ -22,6 +22,8 @@ begin
  assert (wallet->'rewards'->>'xp')::integer=40,'Quest XP credited';
  assert (public.store_request(a,p_email=>a::text||'@example.invalid')->>'tokens')::integer=205,'Repeated sync is idempotent';
  wallet:=public.store_request(b,p_email=>b::text||'@example.invalid');
+ assert (wallet->>'tokens')::integer=105,'PvP loss credits the wallet';
+ assert (public.store_request(b,p_email=>b::text||'@example.invalid')->>'tokens')::integer=105,'PvP loss retry cannot pay twice';
  assert (wallet->'rewards'->>'games')::integer=1,'Offline loser receives played-match progress when returning';
  perform public.solo_reward_start(solo,a,'{"mine":{"element":"fire"}}',42,'0.4');
  perform public.solo_reward_finish(solo,a,'Victory',true);
@@ -34,6 +36,17 @@ begin
  assert public.reward_quest_progress(a,'elements',now()-interval '1 day',now()+interval '1 day')=1,'Distinct elements count once';
  assert public.reward_quest_progress(a,'perfect_wins',now()-interval '1 day',now()+interval '1 day')=2,'Perfect wins counted';
  begin perform public.solo_reward_finish(solo,b,'Victory',true);raise exception 'FAIL unauthorized solo finish';exception when raise_exception then if sqlerrm like 'FAIL%' then raise;end if;end;
+ solo:=gen_random_uuid();
+ perform public.solo_reward_start(solo,b,'{"mine":{"element":"water"}}',42,'0.4');
+ perform public.solo_reward_finish(solo,b,'Defeat',false);
+ perform public.solo_reward_finish(solo,b,'Defeat',false);
+ wallet:=public.store_request(b,p_email=>b::text||'@example.invalid');
+ assert (wallet->>'tokens')::integer=108,'AI loss pays three exactly once';
+ assert (wallet->>'wins')::integer=0,'Losses do not count as wins';
+ solo:=gen_random_uuid();
+ perform public.solo_reward_start(solo,b,'{"mine":{"element":"water"}}',42,'0.4');
+ perform public.solo_reward_finish(solo,b,'Draw',false);
+ assert (public.store_request(b,p_email=>b::text||'@example.invalid')->>'tokens')::integer=108,'Draw payout unchanged';
  reset role;
  assert not has_table_privilege('authenticated','public.match_rewards','INSERT'),'Clients cannot mint results';
  assert not has_function_privilege('authenticated','public.solo_reward_finish(uuid,uuid,text,boolean)','EXECUTE'),'Clients cannot mint payouts';

@@ -3,7 +3,7 @@
 Implemented September 20, 2026 using the original MainMenu win payouts and Progression quest templates.
 
 - Signed-in solo victory: 10 store tokens. Multiplayer victory: 30.
-- Finished losses and draws give no base tokens, but count for played-match quests.
+- From September 22, 2026, completed solo losses award 3 tokens and multiplayer losses award 5. Draws still give no base tokens. All completed results count for played-match quests. Previous recorded rewards are unchanged.
 - One assigned daily and one assigned weekly quest, with the original token and XP amounts. Rewards claim automatically, once per period. Daily resets at midnight UTC; weekly resets Monday midnight UTC.
 - Store → Rewards displays quests, quest XP, the original rank thresholds, and recent match payouts. The old displayed milestone pack gifts are not awarded by this implementation.
 - Existing balances and collections remain in store_accounts. This new quest XP counter tracks rewards earned after rollout; legacy playerprogress remains preserved.
