@@ -1,6 +1,6 @@
 // Canonical multiplayer boundary. This module and the rules are bundled unchanged for Deno.
 import { cards, elements, newMatch, performMove, resolveChoice, outcome, cardCost } from './rulesEngine.js';
-import { BALANCE_VERSION } from './balancePatch.js';
+import { BALANCE_VERSION, SUPPORTED_BALANCE_VERSIONS } from './balancePatch.js';
 export { BALANCE_VERSION };
 export const SIDES = ['playerState', 'opponentState'];
 export function validateDeck(value) {
@@ -15,7 +15,7 @@ export function startMatch(first, second, seed) {
 }
 export function applyAction(state, seat, action) {
   if (!SIDES.includes(seat) || !action || typeof action !== 'object') throw new Error('Invalid action.');
-  if (state.balanceVersion !== BALANCE_VERSION) throw new Error('This match uses a different balance version.');
+  if (!SUPPORTED_BALANCE_VERSIONS.includes(state.balanceVersion)) throw new Error('This match uses a different balance version.');
   if (state.finished || outcome(state)) throw new Error('The duel is over.');
   if (action.type === 'concede') return { ...state, finished: { winner: SIDES.find(s => s !== seat), reason: 'concession' } };
   if (state.pendingChoice) {

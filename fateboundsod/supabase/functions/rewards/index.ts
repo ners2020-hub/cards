@@ -1,6 +1,6 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.94.0';
 import { validateSolo, replaySolo } from '../_shared/rules/soloRewards.js';
-import { BALANCE_VERSION } from '../_shared/rules/balancePatch.js';
+import { BALANCE_VERSION, SUPPORTED_BALANCE_VERSIONS } from '../_shared/rules/balancePatch.js';
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type', 'Access-Control-Allow-Methods': 'POST, OPTIONS' };
 const reply = (body: unknown, status=200) => new Response(JSON.stringify(body), {status,headers:{...cors,'Content-Type':'application/json','Cache-Control':'no-store'}});
 const db=createClient(Deno.env.get('SUPABASE_URL')!,Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,{auth:{persistSession:false,autoRefreshToken:false}});
@@ -28,7 +28,7 @@ Deno.serve(async req=>{
   }
   if(b.op!=='finish') return reply({error:'Invalid request.'},400);
   const row=check(await db.from('solo_reward_sessions').select('*').eq('id',b.id).eq('user_id',actor).maybeSingle());
-  if(!row||row.balance_version!==BALANCE_VERSION) return reply({error:'This match cannot be verified with the current rules.'},422);
+  if(!row||!SUPPORTED_BALANCE_VERSIONS.includes(row.balance_version)) return reply({error:'This match cannot be verified with the current rules.'},422);
   let reward=check(await db.from('match_rewards').select('result,tokens').eq('user_id',actor).eq('match_id',b.id).maybeSingle());
   if(!reward) {
    const verified=await replaySolo(row.config,row.seed,b.actions);

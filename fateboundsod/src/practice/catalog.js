@@ -6,6 +6,9 @@ export const cards = Object.entries(CARD_DATABASE).map(([id, card]) => {
   return { ...card, ...(patch?.cost !== undefined ? { cost: patch.cost } : {}), ...(patch?.description ? { description: patch.description } : {}), id };
 });
 export const byName = Object.fromEntries(cards.map(card => [card.name, card]));
+export const cardElements = card => card.elements && card.element === card.elements[0] ? card.elements : [card.element];
+export const hasElement = (card, element) => cardElements(card).includes(element);
+export const elementLabel = card => cardElements(card).join('/');
 export const elements = ['fire', 'cryo', 'blood', 'wind', 'earth', 'water', 'shadow', 'light', 'electric'];
 export const DEFAULT_RULES = [
   'Gain 2 shards in each of your Energy Phases. Unspent shards carry over. After end-of-turn effects, choose cards to discard until your hand contains at most 7 cards.',

@@ -1,5 +1,5 @@
 import fs from 'node:fs';
 import { cards } from '../src/practice/catalog.js';
 const literal = s => "'" + s.replaceAll("'", "''") + "'";
-const rows=cards.map(c=>`(${[c.id,c.name,c.element,c.card_type].map(literal).join(',')})`).join(',\n');
+const rows=cards.filter(c=>!c.token).map(c=>`(${[c.id,c.name,c.element,c.card_type].map(literal).join(',')})`).join(',\n');
 fs.writeFileSync('supabase/store-catalog.sql',`-- Generated from the balanced local catalog; preserve legacy rarity by card name, never by reused ID.\ninsert into public.store_catalog(id,name,element,card_type) values\n${rows}\non conflict(id) do update set name=excluded.name,element=excluded.element,card_type=excluded.card_type;\nupdate public.store_catalog s set rarity=coalesce((select c.rarity from public.card c where lower(regexp_replace(c.name,'[^a-zA-Z0-9]','','g'))=lower(regexp_replace(s.name,'[^a-zA-Z0-9]','','g')) limit 1),'common');\ninsert into public.store_legacy_cards(legacy_id,card_id) select c.code,s.id from public.card c join public.store_catalog s on lower(regexp_replace(c.name,'[^a-zA-Z0-9]','','g'))=lower(regexp_replace(s.name,'[^a-zA-Z0-9]','','g')) on conflict(legacy_id) do update set card_id=excluded.card_id;\n`);

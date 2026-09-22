@@ -1,13 +1,15 @@
 # Fatebound card abilities
 
-187 cards: 84 creatures, 27 controllers, 52 spells, and 24 artifacts.
+208 designs, including 20 Deathbound cards and the effect-only Risen token.
 
-Playtest balance version 0.2 • 2026-09-16. Printed text comes from the supplied database with the balance patch applied. Executable rules are in `src/practice/cardAbilities.js`, with shared mechanics in `rulesEngine.js`. This inventory is also searchable through **Card library** in the app.
+Playtest balance version 0.5 • Deathbound • 2026-09-22. Printed text comes from the supplied database with the balance patch applied. Executable rules are in `src/practice/cardAbilities.js`, with shared mechanics in `rulesEngine.js`. This inventory is also searchable through **Card library** in the app.
 
 ## Rule defaults
 
 The user approved zero-shard unpriced activated abilities usable once per turn, Nature = Earth, Charge = Haste, and rounding fractional damage up. Other timing interpretations below are provisional and can be adjusted to the canonical rulebook.
 
+- Gain 2 shards in each of your Energy Phases. Unspent shards carry over. After end-of-turn effects, choose cards to discard until your hand contains at most 7 cards.
+- Attack shield creatures (Guardians) first, then other creatures, then Controllers. Any enemy creature on the field protects its Controllers. Only attacking creatures with Stealth can bypass this order; Stealth does not override other target immunities.
 - Unpriced activated abilities cost 0 shards and are usable once per owner turn.
 - Nature means Earth; Charge means Haste. Haste bypasses summoning sickness, but not the turn 1–2 attack lock.
 - Fractional damage and health conversions round up.
@@ -20,7 +22,7 @@ The user approved zero-shard unpriced activated abilities usable once per turn, 
 ## Known interpretation limits
 
 - **Reaper:** Kills do not refund attacks. The current game has no separate block/exhaust phase.
-- **Frozen Spirit:** Its direct-attack bypass applies only when the sole enemy creature is Frozen; it returns after dealing damage.
+- **Frozen Spirit:** Returns after dealing attack damage. A Frozen enemy creature still protects its Controller; bypass requires Stealth.
 - **Draco's Slayer:** Choose equipment or removal when played. Equipment requires Draco; removal requires a 6+ AP creature.
 - **Sun Wolf:** On summon, choose an immediate attack when the first-two-turn attack lock permits it.
 - **Shadow's Embrace:** The stolen hand card becomes a 0/base-CH Guardian token (minimum 1 CH); sacrifice it to heal that CH.
@@ -36,7 +38,7 @@ The user approved zero-shard unpriced activated abilities usable once per turn, 
 - **Light Spirit:** The Light Bind stat-copy synergy is implemented. The supplied list does not define any separate rule for the Vessel keyword.
 - **Nature's Blade:** The +3 AP and draw-on-kill effect last until the current End Phase in this preview.
 
-These are executable solo-preview rules, not a claim that every pairwise card interaction has been exhaustively verified. Online matches still use the original database-driven engine.
+These are executable solo-preview rules, not a claim that every pairwise card interaction has been exhaustively verified. Online matches and solo reward replays use the same shared engine.
 
 ## Blood
 
@@ -242,6 +244,86 @@ Sacrifice all creatures. Add their combined total CH to one of your Controllers 
 **Printed effect**
 
 Destroy 1 enemy creature. If none, steal 2 CH. Non-Blood: Flip a coin.
+### Veyra, the Bloodmother
+
+- Code: CTRL_BLD_DB01
+- Type: controller; cost: 0 shards; AP: 1; CH: 12
+
+**Printed effect**
+
+Blood Price — Once per turn, pay 1 Controller CH to summon 1 Risen. Starting Controller for the Deathbound deck.
+
+**Activated abilities in the current game**
+
+- **Blood Price: summon Risen:** 0 shards + 1 controller CH; once per owner turn. See printed effect above for the effect and any additional sacrifice or target requirements.
+### Blood Husk
+
+- Code: CRTE_BLD_DB01
+- Type: creature; cost: 1 shards; AP: 2; CH: 1
+
+**Printed effect**
+
+Undead. Blood Frenzy — When this creature deals damage to an enemy Controller, heal your Controller for 1 CH.
+### Blood Stitcher
+
+- Code: CRTE_BLD_DB02
+- Type: creature; cost: 2 shards; AP: 1; CH: 4
+
+**Printed effect**
+
+Undead. Stitch Flesh — Once per turn, pay 1 Controller CH to heal an allied Undead creature for 2 CH.
+
+**Activated abilities in the current game**
+
+- **Stitch Flesh: heal Undead:** 0 shards + 1 controller CH; once per owner turn. See printed effect above for the effect and any additional sacrifice or target requirements.
+### Corpse Harvester
+
+- Code: CRTE_BLD_DB03
+- Type: creature; cost: 3 shards; AP: 3; CH: 3
+
+**Printed effect**
+
+Undead. Harvest — When another allied creature is destroyed, heal your Controller for 1 CH. Maximum twice per turn.
+### Sanguine Ghoul
+
+- Code: CRTE_BLD_DB04
+- Type: creature; cost: 4 shards; AP: 4; CH: 4
+
+**Printed effect**
+
+Undead. Blood Feast — When this creature destroys an enemy creature, deal 1 damage to the enemy Controller.
+### Flesh Colossus
+
+- Code: CRTE_BLD_DB05
+- Type: creature; cost: 5 shards; AP: 6; CH: 6
+
+**Printed effect**
+
+Undead. Made From the Dead — When summoned, you may destroy up to 2 allied Risen. For each destroyed, gain +1 AP and +2 maximum/current CH.
+### Fresh Corpse
+
+- Code: SPEL_BLD_DB01
+- Type: spell; cost: 1 shards
+
+**Printed effect**
+
+Deal 1 damage to your Controller, then summon 2 Risen.
+### Bloodletting
+
+- Code: SPEL_BLD_DB02
+- Type: spell; cost: 2 shards
+
+**Printed effect**
+
+Deal 2 damage to an allied creature, then gain 2 Shards.
+### Feast of Corpses
+
+- Code: SPEL_BLD_DB03
+- Type: spell; cost: 3 shards
+
+**Printed effect**
+
+Destroy up to 2 allied Risen. Heal your Controller for 2 CH per Risen destroyed.
 
 ## Cryo
 
@@ -369,9 +451,9 @@ Freeze one enemy creature.
 
 **Printed effect**
 
-If only 1 enemy is on field and it is Frozen, hit Controller directly. Return to hand after attack.
+Return to hand after dealing attack damage. Can attack a protected Controller only if it gains Stealth.
 
-**Preview interpretation:** Its direct-attack bypass applies only when the sole enemy creature is Frozen; it returns after dealing damage.
+**Preview interpretation:** Returns after dealing attack damage. A Frozen enemy creature still protects its Controller; bypass requires Stealth.
 ### Frozen Barrage
 
 - Code: SPEL_CYO_0001
@@ -892,7 +974,7 @@ If Flame Emperor is active, can attack twice. Pay 2 Shards to deal 3 damage to a
 
 **Printed effect**
 
-Bypass Swarm tokens and attack Controller if tokens are only shields.
+Creature protection applies: defeat shield creatures, then other creatures, before attacking a Controller. Can bypass this order only if it gains Stealth.
 ### Fire Paladin
 
 - Code: CRTE_FIR_0004
@@ -1094,7 +1176,7 @@ All Light creatures gain +2 AP for this turn.
 
 **Printed effect**
 
-Guardian: Must be destroyed before opponent can attack your Controller.
+Guardian: Enemies must attack this shield creature before other creatures or Controllers, unless attacking with a creature that has Stealth.
 ### Radiant Witch
 
 - Code: CRTE_LGT_0007
@@ -1211,7 +1293,7 @@ Equipped creature gains +5 AP. When attacking, deal 1 damage to all other enemy 
 
 **Printed effect**
 
-Equipped creature gains +4 AP. Ignores Swarm tokens. Equipped creature loses 2 CH each End Phase.
+Equipped creature gains +4 AP and loses 2 CH each End Phase. Creature protection applies unless the equipped creature has Stealth.
 ### Dark Orb
 
 - Code: ARFT_SHD_0003
@@ -1383,6 +1465,108 @@ Target Shadow creature gains +2 AP and Stealth. Triggers Samurai or Phantom syne
 **Printed effect**
 
 Deal 3 damage to all creatures. If Darth Ayres is out, your units are safe. Gain 1 Shard next turn for each creature destroyed.
+### Mordrath, Keeper of Graves
+
+- Code: CTRL_SHD_DB01
+- Type: controller; cost: 0 shards; AP: 1; CH: 12
+
+**Printed effect**
+
+Restless Dead — Once per turn, when an allied creature is destroyed, gain 1 Shard. Starting Controller for the Deathbound deck.
+### Graveborn Wretch
+
+- Code: CRTE_SHD_DB01
+- Type: creature; cost: 1 shards; AP: 1; CH: 2
+
+**Printed effect**
+
+Undead. Grave Whisper — When destroyed, gain 1 Shard.
+### Crypt Crawler
+
+- Code: CRTE_SHD_DB02
+- Type: creature; cost: 2 shards; AP: 2; CH: 3
+
+**Printed effect**
+
+Undead. No ability.
+### Gravecaller
+
+- Code: CRTE_SHD_DB03
+- Type: creature; cost: 3 shards; AP: 2; CH: 3
+
+**Printed effect**
+
+Undead. Unearth — When summoned, summon 2 Risen.
+### Hollow Knight
+
+- Code: CRTE_SHD_DB04
+- Type: creature; cost: 3 shards; AP: 3; CH: 5
+- Printed keywords: Guardian
+
+**Printed effect**
+
+Undead. Guardian — Must be attacked before other creatures or Controllers, unless the attacker has Stealth.
+### Gravebound Horror
+
+- Code: CRTE_SHD_DB05
+- Type: creature; cost: 4 shards; AP: 5; CH: 5
+
+**Printed effect**
+
+Undead. Refuse Death — The first time this creature would be destroyed, it remains in play with 1 CH instead.
+### The First Corpse
+
+- Code: CRTE_MIX_DB01
+- Type: creature; cost: 7 shards; AP: 7; CH: 8
+
+**Printed effect**
+
+Unique Undead. Ancient Dead — When summoned, summon 1 Risen per other allied Undead, up to 3. Consume — Once per turn, destroy an allied Risen to heal this creature for 2 CH.
+
+**Activated abilities in the current game**
+
+- **Consume: destroy Risen and heal 2 CH:** 0 shards; once per owner turn. See printed effect above for the effect and any additional sacrifice or target requirements.
+### Shadow's Grasp
+
+- Code: SPEL_SHD_DB01
+- Type: spell; cost: 2 shards
+
+**Printed effect**
+
+Deal 2 damage to an enemy creature.
+### Call From Below
+
+- Code: SPEL_SHD_DB02
+- Type: spell; cost: 4 shards
+
+**Printed effect**
+
+Return a non-token Undead creature from your graveyard to play. It must have been destroyed this game; a creature merely discarded is not eligible.
+### Death Wave
+
+- Code: SPEL_MIX_DB01
+- Type: spell; cost: 5 shards
+
+**Printed effect**
+
+Deal 2 damage to all creatures. Heal your Controller for 1 CH per creature destroyed by Death Wave, up to 3 CH.
+### The Bone Pit
+
+- Code: PERS_SHD_DB01
+- Type: spell; cost: 3 shards
+- Solo implementation: persistent spell; remains in a spell slot.
+
+**Printed effect**
+
+Persistent. Once per turn, when an allied creature is destroyed, summon 1 Risen.
+### Risen
+
+- Code: TOKEN_RISEN
+- Type: creature; cost: 0 shards; AP: 1; CH: 1
+
+**Printed effect**
+
+Undead token. Created by effects only; cannot be included in decks or revived from the graveyard.
 
 ## Universal
 

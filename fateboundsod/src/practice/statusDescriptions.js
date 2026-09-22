@@ -1,4 +1,5 @@
 const meanings = {
+ 'Refuse Death spent':'This creature has already survived its first destruction. The next destruction will remove it normally. Returning it to play creates a fresh instance.',
  Frozen:'Cannot attack.', Paralyzed:'Cannot attack.', Bound:'Cannot attack or use activated abilities.',
  Silenced:'Printed traits, passive effects and activated abilities are disabled.',
  'Passive disabled':'Printed traits and passive effects are disabled. Activated abilities remain available.',

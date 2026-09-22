@@ -1,4 +1,6 @@
-export const BALANCE_VERSION = '0.4 • 2026-09-17';
+export const BALANCE_VERSION = '0.5 • Deathbound • 2026-09-22';
+// Legacy decks retain their original order and rules; existing matches can finish.
+export const SUPPORTED_BALANCE_VERSIONS = [BALANCE_VERSION, '0.4 • 2026-09-17'];
 // Playtest tuning. Keep the supplied database intact for before/after comparisons.
 export const balancePatch = {
   'Flame Dragon': { description: 'Creature protection applies: defeat shield creatures, then other creatures, before attacking a Controller. Can bypass this order only if it gains Stealth.', reason: 'The confirmed protection rule allows only creature Stealth to bypass defenders.' },

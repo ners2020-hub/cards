@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import {startSolo,replaySolo} from '../src/practice/soloRewards.js';
 import {cards,performMove,resolveChoice,runAITurn,outcome,chooseAIAttack} from '../src/practice/rulesEngine.js';
-for(const element of ['fire','water','cryo']) {
- const config={mine:{element,controller:cards.find(c=>c.element===element&&c.card_type==='controller').name},enemy:{element:'fire',controller:'Flame Emperor'},difficulty:'medium'};
+for(const mine of [...['fire','water','cryo'].map(element=>({element,controller:cards.find(c=>c.element===element&&c.card_type==='controller').name})),{element:'blood',controller:'Veyra, the Bloodmother'},{element:'shadow',controller:'Mordrath, Keeper of Graves'}]) {
+ const config={mine,enemy:{element:'fire',controller:'Flame Emperor'},difficulty:'medium'};
  let g=startSolo(config,42),actions=[];
  while(!outcome(g)&&actions.length<1500){
   let move={type:'advance'};
@@ -16,7 +16,7 @@ for(const element of ['fire','water','cryo']) {
  await assert.rejects(replaySolo(config,42,actions.concat({type:'advance'})));
  await assert.rejects(replaySolo(config,42,[{type:'play',index:0,free:true}]));
  await assert.rejects(replaySolo(config,42,[{type:'advance'}]));
- console.log('PASS verified solo',element,actions.length,checked.result);
+ console.log('PASS verified solo',mine.controller,actions.length,checked.result);
 }
 console.log('Solo replay rejects forged actions, unfinished games and extra actions.');
 const config={mine:{element:'fire',controller:'Flame Emperor'},enemy:{element:'fire',controller:'Flame Emperor'},difficulty:'hard'};

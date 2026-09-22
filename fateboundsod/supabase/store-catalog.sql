@@ -186,7 +186,27 @@ insert into public.store_catalog(id,name,element,card_type) values
 ('SPEL_WID_0005','Dark Infusion','wind','spell'),
 ('SPEL_WID_0006','Wind Protection','wind','spell'),
 ('SPEL_WID_0007','Smoke Body','wind','spell'),
-('SPEL_WID_0008','Wind Mirage','wind','spell')
+('SPEL_WID_0008','Wind Mirage','wind','spell'),
+('CTRL_BLD_DB01','Veyra, the Bloodmother','blood','controller'),
+('CTRL_SHD_DB01','Mordrath, Keeper of Graves','shadow','controller'),
+('CRTE_SHD_DB01','Graveborn Wretch','shadow','creature'),
+('CRTE_BLD_DB01','Blood Husk','blood','creature'),
+('CRTE_SHD_DB02','Crypt Crawler','shadow','creature'),
+('CRTE_BLD_DB02','Blood Stitcher','blood','creature'),
+('CRTE_SHD_DB03','Gravecaller','shadow','creature'),
+('CRTE_BLD_DB03','Corpse Harvester','blood','creature'),
+('CRTE_SHD_DB04','Hollow Knight','shadow','creature'),
+('CRTE_BLD_DB04','Sanguine Ghoul','blood','creature'),
+('CRTE_SHD_DB05','Gravebound Horror','shadow','creature'),
+('CRTE_BLD_DB05','Flesh Colossus','blood','creature'),
+('CRTE_MIX_DB01','The First Corpse','shadow','creature'),
+('SPEL_BLD_DB01','Fresh Corpse','blood','spell'),
+('SPEL_SHD_DB01','Shadow''s Grasp','shadow','spell'),
+('SPEL_BLD_DB02','Bloodletting','blood','spell'),
+('SPEL_BLD_DB03','Feast of Corpses','blood','spell'),
+('SPEL_SHD_DB02','Call From Below','shadow','spell'),
+('SPEL_MIX_DB01','Death Wave','shadow','spell'),
+('PERS_SHD_DB01','The Bone Pit','shadow','spell')
 on conflict(id) do update set name=excluded.name,element=excluded.element,card_type=excluded.card_type;
 update public.store_catalog s set rarity=coalesce((select c.rarity from public.card c where lower(regexp_replace(c.name,'[^a-zA-Z0-9]','','g'))=lower(regexp_replace(s.name,'[^a-zA-Z0-9]','','g')) limit 1),'common');
 insert into public.store_legacy_cards(legacy_id,card_id) select c.code,s.id from public.card c join public.store_catalog s on lower(regexp_replace(c.name,'[^a-zA-Z0-9]','','g'))=lower(regexp_replace(s.name,'[^a-zA-Z0-9]','','g')) on conflict(legacy_id) do update set card_id=excluded.card_id;

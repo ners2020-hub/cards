@@ -1,5 +1,6 @@
 // Master Card Database - Single source of truth for all card data
 
+import { deathboundCards } from './deathbound.js';
 export const CARD_DATABASE = {
   // Blood Cards
   'ARFT_BLD_0001': { id: 'ARFT_BLD_0001', name: 'Katana of Fate', element: 'blood', card_type: 'artifact', cost: 2, description: 'Attached card gains +1 AP (+2 if Blood). If on Blood_General or Ren, they gain RenLarKu\'s current AP.', is_persistent: true, keywords: [], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/9d1f94061_Katana_of_Fate.png' },
@@ -114,7 +115,7 @@ export const CARD_DATABASE = {
   'SPEL_FIR_0003': { id: 'SPEL_FIR_0003', name: 'Enflamed', element: 'fire', card_type: 'spell', cost: 4, description: 'Destroy 1 enemy creature. If Supreme Fire Spirit is active: enemy explodes after 1 turn; deal its CH to enemy Controller.', keywords: [], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/954ad10ed_02xEnflamed.png' },
 
   // Light Cards
-  'ARFT_LGT_0001': { id: 'ARFT_LGT_0001', name: 'Dagger of Fate', element: 'light', card_type: 'artifact', cost: 2, description: 'Equipped creature gets +2 AP. If it attacks a Controller, opponent discards 1 card.', is_persistent: true, keywords: [], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/d3206d2ed_02xDaggerofFate.png' },
+  'ARFT_LGT_0001': { id: 'ARFT_LGT_0001', name: 'Dagger of Fate', element: 'light', card_type: 'artifact', cost: 2, description: 'Equipped creature gets +2 AP. If it attacks a Controller, opponent discards 1 card.', is_persistent: true, keywords: [], image_url: '/cards/dagger-of-fate.jpg' },
   'ARFT_LGT_0002': { id: 'ARFT_LGT_0002', name: 'Sword of the Sun Guardian', element: 'light', card_type: 'artifact', cost: 3, description: 'Equipped creature gets +4 AP. Sun Knight gains Stealth; Stealth attacks deal 50% damage to Controller.', is_persistent: true, keywords: [], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/fa1fdac8c_02xSwordoftheSunGuardian.png' },
   'CTRL_LGT_0001': { id: 'CTRL_LGT_0001', name: 'Cosmic Sunlight Goddess', element: 'light', card_type: 'controller', cost: 6, ap: 1, ch: 12, description: 'All Light creatures gain +1 AP. Active (4): Opponent cannot play Artifacts for 2 turns.', keywords: [], is_unique: true, image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/fc27f2189_01xCosmicSunlightGoddess.png' },
   'CTRL_LGT_0002': { id: 'CTRL_LGT_0002', name: 'Perfect Light Being', element: 'light', card_type: 'controller', cost: 5, ap: 1, ch: 12, description: 'Light Spells cost 1 less (min 1). Active (3): Light Bind: Target cannot attack/use abilities for 2 turns.', keywords: [], is_unique: true, image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/007d67cff_01xPerfectLightBeing.png' },
@@ -207,6 +208,7 @@ export const CARD_DATABASE = {
   'SPEL_WID_0006': { id: 'SPEL_WID_0006', name: 'Wind Protection', element: 'wind', card_type: 'spell', cost: 3, description: 'If you have 2+ Wind allies, they cannot be attacked for 3 turns.', keywords: [], is_persistent: true, image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/d1b71d78c_Wind_Protection.png' },
   'SPEL_WID_0007': { id: 'SPEL_WID_0007', name: 'Smoke Body', element: 'wind', card_type: 'spell', cost: 2, description: 'Target is invulnerable/untargetable. Enables Spirit of the Wind direct attacks.', keywords: [], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/2b9d1365d_Smoke_Body.png' },
   'SPEL_WID_0008': { id: 'SPEL_WID_0008', name: 'Wind Mirage', element: 'wind', card_type: 'spell', cost: 3, description: 'Stops an attack on Controller; summons a defensive Wind Golem (cannot attack).', keywords: ['Reaction'], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/1d4295042_Wind_Mirage.png' },
+  ...deathboundCards,
 };
 
 // Helper function to get card by ID

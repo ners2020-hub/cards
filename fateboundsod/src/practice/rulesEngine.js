@@ -1,6 +1,7 @@
-import { cards, byName, elements } from './catalog.js';
+import { cards, byName, elements, hasElement } from './catalog.js';
 import { definitions } from './cardAbilities.js';
 import { chooseCombatMove } from './aiStrategy.js';
+import { deathboundDeck } from './deathbound.js';
 
 export { cards, elements };
 const sides = ['playerState', 'opponentState'];
@@ -80,6 +81,7 @@ function remove(g, unit, cause, input, killer = null) {
   if (unit.zone === 'artifacts' && ['spell', 'ability', 'combat', 'attachment'].includes(cause) && field(g, unit.side).some(u => u.card.name === 'Wind Keeper' && !suppressed(u))) { if (cause === 'attachment') unit.target = null; return false; }
   if (cause === 'spell' && (unit.traits?.spellImmune || (unit.zone === 'artifacts' && field(g, unit.side).some(u => u.card.name === 'Earth Knight' && !suppressed(u))) || (unit.zone === 'spells' && sides.some(s => g[s].spells.some(u => u?.card.name === 'Divine Elemental Convergence'))))) return false;
   if (cause === 'sacrifice' && unit.traits?.cannotSacrifice) throw new Error(`${unit.card.name} cannot be sacrificed.`);
+  if (!suppressed(unit) && definition(unit).preventDeath?.(context(g, unit.side, unit, input))) return false;
   g[loc.side][loc.zone][loc.index] = null;
   if (unit.zone === 'controllers') g[unit.owner].controllersLost = (g[unit.owner].controllersLost || 0) + 1;
   const attachments = [...g[unit.side].artifacts, ...g[unit.side].spells].filter(a => a?.target === unit.uid);
@@ -87,10 +89,14 @@ function remove(g, unit, cause, input, killer = null) {
     if (a.card.name === 'Vampiric Destiny') { a.flags.returnCard = clone(unit.card); a.flags.returnOwner = unit.owner; a.flags.returnTurn = g.turnNumber; a.target = null; }
     else remove(g, a, 'attachment', input);
   }
-  if (!unit.card.token) g[unit.owner][hasStatus(unit, 'Zombified') ? 'void' : 'graveyard'].push(unit.card);
+  if (!unit.card.token) {
+    if (unit.card.subtypes?.includes('Undead') && unit.zone === 'creatures') unit.card.destroyedThisGame = true;
+    g[unit.owner][hasStatus(unit, 'Zombified') ? 'void' : 'graveyard'].push(unit.card);
+  }
   note(g, `${unit.card.name} ${cause === 'sacrifice' ? 'sacrificed' : 'destroyed'}.`);
   if (!suppressed(unit)) definition(unit).onDeath?.(context(g, unit.side, unit, input), { cause, killer });
   emit(g, 'unitDied', { unit, cause, killer }, input, unit.side);
+  if (killer && !suppressed(killer)) definition(killer).destroyedEnemy?.(context(g, killer.side, killer, input), unit);
   if (unit.flags.enflamed) damage(g, active(g, other(unit.flags.enflamed.side)), unit.flags.enflamed.amount, 'spell', input, unit);
   if (unit.flags.dracoCurse) g[unit.flags.dracoCurse].flags.dracoDoubleNext = true;
   return true;
@@ -129,11 +135,13 @@ function damage(g, target, amount, kind, input, source = null) {
   g.lastEffect = { kind: 'damage', uid: target.uid, amount };
   recalc(g);
   if (target.currentCH <= 0) remove(g, target, kind, input, source);
+  if (amount > 0 && source && !suppressed(source)) definition(source).dealtDamage?.(context(g, source.side, source, input), target);
   return amount;
 }
 function summonUnit(ctx, card, options = {}) {
   if (!card) return null;
   const { g, side, input } = ctx;
+  if (card.card_type === 'creature' && card.is_unique && g[side].creatures.some(u => u?.card.id === card.id)) throw new Error(`Only one ${card.name} may be in play on your side.`);
   const zone = options.controller ? 'controllers' : 'creatures';
   const index = options.index ?? g[side][zone].findIndex(u => !u);
   if (index < 0 || index >= g[side][zone].length || g[side][zone][index]) throw new Error(`No empty ${zone} slot.`);
@@ -214,6 +222,7 @@ function price(g, side, card) {
   return Math.max(card.name === "Draco's Inferno" ? 1 : 0, cost);
 }
 function play(g, side, card, input, move = {}) {
+  if (card.token || card.startingOnly) throw new Error('This card can only enter play through its starting or token effect.');
   const previousPresentation = input.spellPresentation;
   if (card.card_type === 'spell') input.spellPresentation = { cardId: card.id, targets: [] };
   const source = { card, side, uid: 'casting' }; let ctx = context(g, side, source, input);
@@ -381,7 +390,7 @@ export function performMove(state, move, choices = [], auto = false) {
       if (g.phase !== 'main') throw new Error('Play cards during your main phase.');
       const card = g[side][move.fromGraveyard ? 'graveyard' : 'hand'][move.index];
       if (!card) throw new Error('Select a card from your hand.');
-      if (move.fromGraveyard && !(card.element === 'shadow' && card.card_type === 'spell' && field(g, side).some(u => u.card.name === 'Shadow Master'))) throw new Error('Shadow Master is required to cast from discard.');
+      if (move.fromGraveyard && !(hasElement(card, 'shadow') && card.card_type === 'spell' && field(g, side).some(u => u.card.name === 'Shadow Master'))) throw new Error('Shadow Master is required to cast from discard.');
       play(g, side, card, input, move);
     } else if (move.type === 'ability') {
       if (g.phase !== 'main') throw new Error('Activate abilities during main phase.');
@@ -420,22 +429,23 @@ export function newMatch(element, enemy, controllerName, enemyControllerName, se
   const g = { serial: 0, seed: seed >>> 0, turnNumber: 1, isMyTurn: true, phase: 'draw', gameMode: 'ai', log: [] };
   for (const [i, side] of sides.entries()) {
     const el = i ? enemy : element;
-    const pool = cards.filter(c => c.element === el && c.card_type !== 'controller');
+    const pool = cards.filter(c => !c.archetype && c.element === el && c.card_type !== 'controller');
     const creatures = pool.filter(c => c.card_type === 'creature');
     const spells = pool.filter(c => c.card_type === 'spell');
     const artifacts = pool.filter(c => c.card_type === 'artifact');
-    const controllerCards = cards.filter(c => c.element === el && c.card_type === 'controller');
+    const controllerCards = cards.filter(c => !c.startingOnly && c.element === el && c.card_type === 'controller');
     const chosenName = i ? enemyControllerName : controllerName;
     const reserves = controllerCards.filter(c => c.name !== (chosenName || controllerCards[0].name));
-    const deck = [
+    const deathbound = byName[chosenName]?.archetype === 'deathbound';
+    const deck = (deathbound ? deathboundDeck.map(name => byName[name]) : [
       ...Array.from({ length: 14 }, (_, n) => creatures[n % creatures.length]),
       ...Array.from({ length: 8 }, (_, n) => spells[n % spells.length]),
       ...Array.from({ length: 4 }, (_, n) => artifacts[n % artifacts.length]),
       ...reserves, byName['Elemental Convergence'], byName['Creature Recall'],
-    ].map(clone);
+    ]).map(clone);
     for (let n = deck.length - 1; n > 0; n--) { const j = Math.floor(random(g) * (n + 1)); [deck[n], deck[j]] = [deck[j], deck[n]]; }
     // Opening hands include each card type so the rules are easy to explore.
-    const hand = ['creature', 'creature', 'spell', 'artifact', 'creature'].map(type => { const index = deck.findIndex(c => c.card_type === type); return deck.splice(index, 1)[0]; });
+    const hand = ['creature', 'creature', 'spell', deathbound ? 'spell' : 'artifact', 'creature'].map(type => { const index = deck.findIndex(c => c.card_type === type); return deck.splice(index, 1)[0]; });
     g[side] = { controllersLost: 0, shards: 10, controllers: [null, null, null], creatures: Array(5).fill(null), artifacts: Array(3).fill(null), spells: Array(3).fill(null), hand, deck, graveyard: [], void: [], banished: [], flags: {}, locks: {}, banned: {}, turns: 1, temporaryShards: 0, nextShards: 0 };
   }
   for (const [i, side] of sides.entries()) {

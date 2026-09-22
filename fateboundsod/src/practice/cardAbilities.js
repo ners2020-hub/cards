@@ -1,9 +1,11 @@
+import { deathboundDefinitions } from './deathbound.js';
+import { hasElement } from './catalog.js';
 // Explicit, reviewable card rules. Printed descriptions are never parsed at runtime.
 const need = (condition, message) => { if (!condition) throw new Error(message); };
 const active = (label, run, cost = 0, ch = 0) => ({ label, run, cost, ch });
 const allies = c => c.me.creatures.filter(Boolean);
 const enemies = c => c.enemy.creatures.filter(Boolean);
-const elemental = (c, element) => allies(c).filter(u => u.card.element === element);
+const elemental = (c, element) => allies(c).filter(u => hasElement(u.card, element));
 const buffAura = (c, element, ap = 0, ch = 0, others = false) => elemental(c, element).filter(u => !others || u.uid !== c.source.uid).forEach(u => { u.currentAP += ap; u.maxCH += ch; });
 const equipAura = (c, ap = 0, ch = 0, traits = {}) => { const u = c.targetUnit(); if (u) { u.currentAP += ap; u.maxCH += ch; Object.assign(u.traits, traits); } };
 const freeze = (c, u, n = 1) => c.status(u, 'Frozen', { remaining: n });
@@ -23,6 +25,7 @@ const onOwnTurn = (c, side) => c.side === side;
 const attached = (c, name, u = c.source) => c.attached(u).some(a => a.card.name === name);
 
 export const definitions = {
+  ...deathboundDefinitions,
   // BLOOD
   'Katana of Fate': { equip: true, aura(c) { const u = c.targetUnit(); if (!u) return; u.currentAP += u.card.element === 'blood' ? 2 : 1; if (['Blood General', 'Ren'].includes(u.card.name)) u.currentAP += c.named('RenLarKu')?.currentAP || 0; } },
   'The Generals Armor': { equip: true, aura: c => equipAura(c, 0, 0, { spellImmune: true }) },

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Diamond, ArrowLeft, Sparkles, Layers, Lock, Check, Gift } from 'lucide-react';
 import { AuthProvider, useAuth } from '../lib/AuthContext';
 import { supabase } from '../lib/supabaseClient';
-import { cards, elements } from '../practice/catalog';
+import { cards, elements, hasElement } from '../practice/catalog';
 import { PACKS, UNLOCKS, ELEMENT_COLORS } from './catalog';
 import '../practice/practice.css';
 import './store.css';
@@ -46,7 +46,7 @@ function Store() {
   }catch(e){if(e.definitive){setPending(null);sessionStorage.removeItem(pendingKey);}throw e;}
  });}
  const ownedCount=Object.values(account?.owned||{}).reduce((sum,n)=>sum+n,0);
- const collection=cards.filter(c=>(account?.owned?.[c.id]||0)>0&&(element==='all'||c.element===element)&&`${c.name} ${c.description}`.toLowerCase().includes(query.toLowerCase()));
+ const collection=cards.filter(c=>(account?.owned?.[c.id]||0)>0&&(element==='all'||hasElement(c,element))&&`${c.name} ${c.description}`.toLowerCase().includes(query.toLowerCase()));
  return <div className="fate-app store-app">
   <header className="fate-header"><a className="brand" href="/"><Diamond size={28}/><span>FATEBOUND<small>SHARDS OF DOMINION</small></span></a><nav className="header-tools" aria-label="Game navigation"><a href="/">Arena</a><a href="/multiplayer">Multiplayer</a>{account?.isAdmin&&<a href="/admin">Admin tools</a>}{user&&<button disabled={busy||!!pending} onClick={()=>run(signOut)}>Sign out</button>}</nav></header>
   <main className="store-main"><a className="store-back" href="/"><ArrowLeft size={15}/> Back to the arena</a>
