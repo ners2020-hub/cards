@@ -25,11 +25,13 @@ function Card({ card, instance, onClick, selected, ready, onInspect, onAbility, 
     return () => clearTimeout(timer);
   }, [instance?.currentCH]);
   const isUnit = ['creature', 'controller'].includes(card.card_type);
+  // Artwork can be updated without changing an existing server-held match snapshot.
+  const artwork = cards.find(c => c.id === card.id)?.image_url || card.image_url;
   const statuses = Object.entries(instance?.statuses || {}).map(([name, data]) => describeStatus(name, data));
   const inspectCard = () => onInspect({ ...(cards.find(c => c.id === card.id) || card), unitUid: instance?.uid });
   return <motion.div data-unit={instance?.uid} layout={!reduced} initial={reduced ? false : { opacity: 0, y: 25, scale: .9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0 }} className={`duel-card ${selected ? 'selected' : ''} ${ready ? 'ready' : ''}`} style={{ '--element': colors[card.element] || '#d1c6ad' }}>
     <button className="card-face" onClick={onClick} aria-label={`${card.name}, ${cost ?? card.cost} shards${isUnit ? `, ${instance?.currentAP ?? card.ap} attack, ${instance?.currentCH ?? card.ch} health` : `, ${card.card_type}`}`}>
-      {!failed && card.image_url && <img src={card.image_url} alt="" onError={() => setFailed(true)} />}
+      {!failed && artwork && <img src={artwork} alt="" onError={() => setFailed(true)} />}
       <span className="card-fallback"><Diamond size={42} /></span><span className="card-cost">{cost ?? card.cost}</span>
       <span className="card-caption"><strong>{card.name}</strong><span>{isUnit ? <b>⚔ {instance?.currentAP ?? card.ap}</b> : <b>✦</b>}<small>{card.card_type === 'creature' ? elementLabel(card) : card.card_type}</small>{isUnit && <b>♥ {instance?.currentCH ?? card.ch}</b>}</span></span>
     </button>

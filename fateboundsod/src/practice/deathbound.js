@@ -1,5 +1,28 @@
 // Deathbound master list. Tokens are visible in the library, never in packs or decks.
-const card = (id, name, element, card_type, cost, ap, ch, description, extra = {}) => ({ id, name, element, card_type, cost, ...(ap !== null ? { ap, ch } : {}), description, keywords: [], archetype: 'deathbound', ...extra });
+const artwork = {
+  CTRL_BLD_DB01: '/cards/veyra.jpg',
+  CTRL_SHD_DB01: '/cards/mordrath.jpg',
+  CRTE_SHD_DB01: '/cards/graveborn-wretch.jpg',
+  CRTE_BLD_DB01: '/cards/blood-husk.jpg',
+  CRTE_SHD_DB02: '/cards/crypt-crawler.jpg',
+  CRTE_BLD_DB02: '/cards/blood-stitcher.png',
+  CRTE_SHD_DB03: '/cards/gravecaller.png',
+  CRTE_BLD_DB03: '/cards/corpse-harvester.png',
+  CRTE_SHD_DB04: '/cards/hollow-knight.png',
+  CRTE_BLD_DB04: '/cards/sanguine-ghoul.png',
+  CRTE_SHD_DB05: '/cards/gravebound-horror.png',
+  CRTE_BLD_DB05: '/cards/flesh-colossus.png',
+  CRTE_MIX_DB01: '/cards/the-first-corpse.png',
+  SPEL_BLD_DB01: '/cards/fresh-corpse.png',
+  SPEL_SHD_DB01: '/cards/shadows-grasp.png',
+  SPEL_BLD_DB02: '/cards/bloodletting.png',
+  SPEL_BLD_DB03: '/cards/feast-of-corpses.png',
+  SPEL_SHD_DB02: '/cards/call-from-below.png',
+  SPEL_MIX_DB01: '/cards/death-wave.png',
+  PERS_SHD_DB01: '/cards/the-bone-pit.png',
+  TOKEN_RISEN: '/cards/risen.png',
+};
+const card = (id, name, element, card_type, cost, ap, ch, description, extra = {}) => ({ id, name, element, card_type, cost, ...(ap !== null ? { ap, ch } : {}), description, keywords: [], archetype: 'deathbound', ...(artwork[id] ? { image_url: artwork[id] } : {}), ...extra });
 const creature = (id, name, element, cost, ap, ch, description, extra = {}) => card(id, name, element, 'creature', cost, ap, ch, description, { subtypes: ['Undead'], ...extra });
 const spell = (id, name, element, cost, description, extra = {}) => card(id, name, element, 'spell', cost, null, null, description, extra);
 export const deathboundCards = Object.fromEntries([
