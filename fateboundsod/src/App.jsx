@@ -1,5 +1,6 @@
 import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import AudioControls from './audio/AudioControls';
 
 const Practice = lazy(() => import('./practice/Practice.jsx'));
 const Multiplayer = lazy(() => import('./multiplayer/Multiplayer.jsx'));
@@ -13,6 +14,7 @@ function Redirect({ to }) {
 
 export default function App() {
   return <BrowserRouter>
+    <AudioControls />
     <Suspense fallback={<div style={{ padding: 40, color: 'white', background: '#10121b' }}>Opening Fatebound…</div>}>
       <Routes>
         <Route path="/" element={<Practice />} />

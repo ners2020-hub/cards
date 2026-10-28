@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { ArrowLeft, ArrowRight, Diamond, Swords, BookOpen, Volume2, VolumeX, X, Sparkles } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Diamond, Swords, BookOpen, X, Sparkles } from 'lucide-react';
+import { setBattleAudio, playSound, stopEffects } from '../audio/gameAudio';
 import { cards, elements, newMatch, outcome, performMove, resolveChoice, cancelChoice, abilityList, cardCost, runAITurn } from './rulesEngine.js';
 import { definitions, interpretations } from './cardAbilities.js';
 import { DEFAULT_RULES, hasElement, elementLabel } from './catalog.js';
@@ -75,7 +76,6 @@ export default function Practice({ remote = null }) {
   const [filter, setFilter] = useState('all');
   const [notice, setNotice] = useState('');
   const [effect, setEffect] = useState(null);
-  const [sound, setSound] = useState(false);
   const [difficulty, setDifficulty] = useState('medium');
   const [localBusy, setBusy] = useState(false);
   const playback = useBattlePlayback(setGame, setNotice);
@@ -91,19 +91,14 @@ export default function Practice({ remote = null }) {
     
   }, [remote?.game, remote?.version]);
   const generation = useRef(0);
-  const audio = useRef(null);
   const winner = game ? remote ? game.result : outcome(game) : null;
-  useEffect(() => () => { generation.current++; audio.current?.close(); }, []);
+  useEffect(() => () => { generation.current++; stopEffects(); }, []);
+  useEffect(() => { setBattleAudio(!!game && !winner); return () => setBattleAudio(false); }, [!!game, winner]);
+  useEffect(() => { if (winner) playSound(winner === 'Victory' ? 'victory' : winner === 'Defeat' ? 'defeat' : 'turn'); }, [winner]);
   useEffect(() => { if (!effect) return; const timer = setTimeout(() => setEffect(null), 850); return () => clearTimeout(timer); }, [effect]);
   function pulse(text, kind = 'summon', show = true) {
     if (show) setEffect({ text, kind, id: Date.now() });
-    if (!sound) return;
-    const Audio = window.AudioContext || window.webkitAudioContext;
-    if (!Audio) return;
-    audio.current ||= new Audio(); const ctx = audio.current; void ctx.resume();
-    const tone = ctx.createOscillator(); const gain = ctx.createGain(); tone.connect(gain); gain.connect(ctx.destination);
-    tone.frequency.setValueAtTime(kind === 'attack' ? 150 : 440, ctx.currentTime); tone.frequency.exponentialRampToValueAtTime(70, ctx.currentTime + .25);
-    gain.gain.setValueAtTime(.06, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + .3); tone.start(); tone.stop(ctx.currentTime + .3);
+    if (show) playSound(kind);
   }
   async function begin() {
     if (remote) { playback.reset(); remote.leave(); return; }
@@ -181,7 +176,7 @@ export default function Practice({ remote = null }) {
     onAbility={unit.side === 'playerState' && abilityList(unit).length ? () => setAbilityUnit(unit) : null} />;
   return <div ref={playback.root} className="fate-app" style={{ '--accent': colors[element] }}>
     <header className="fate-header"><button className="brand" onClick={leave}><Diamond /><span>FATEBOUND<small>SHARDS OF DOMINION</small></span></button>
-      <div className="header-tools"><span className="practice-badge">{remote ? "INVITE DUEL" : "SOLO ARENA"}</span><button aria-label={sound ? 'Mute effects' : 'Enable sound effects'} onClick={() => setSound(!sound)}>{sound ? <Volume2 size={19} /> : <VolumeX size={19} />}</button><button onClick={() => setLibrary(true)}><BookOpen size={18} /><span> Card library</span></button><button onClick={() => setHelp(true)}>Rules</button><a href="/multiplayer">Multiplayer</a><a href="/store">Card store</a><a href="/login">Account</a></div>
+      <div className="header-tools"><span className="practice-badge">{remote ? "INVITE DUEL" : "SOLO ARENA"}</span><button onClick={() => setLibrary(true)}><BookOpen size={18} /><span> Card library</span></button><button onClick={() => setHelp(true)}>Rules</button><a href="/multiplayer">Multiplayer</a><a href="/store">Card store</a><a href="/login">Account</a></div>
     </header>
     {!game ? <main className="lobby"><section className="lobby-copy"><div className="eyebrow">THE ARENA AWAITS</div><h1>Choose your fate.<br /><em>Claim dominion.</em></h1><p>Command your creatures. Cast your spells. Equip powerful artifacts and claim the battlefield.</p>
       <div className="mode-summary"><Swords /><div><strong>A duel of elements</strong><span>{cards.length} card designs · Deathbound now available</span></div></div>
