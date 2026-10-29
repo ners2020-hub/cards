@@ -1,4 +1,5 @@
-import { cards, byName, elements, hasElement } from './catalog.js';
+import { cards, byName, elements, hasElement, controllersForDeck } from './catalog.js';
+import { dragonDeck } from './dragonDeck.js';
 import { definitions } from './cardAbilities.js';
 import { chooseCombatMove } from './aiStrategy.js';
 import { deathboundDeck } from './deathbound.js';
@@ -433,11 +434,11 @@ export function newMatch(element, enemy, controllerName, enemyControllerName, se
     const creatures = pool.filter(c => c.card_type === 'creature');
     const spells = pool.filter(c => c.card_type === 'spell');
     const artifacts = pool.filter(c => c.card_type === 'artifact');
-    const controllerCards = cards.filter(c => !c.startingOnly && c.element === el && c.card_type === 'controller');
+    const controllerCards = controllersForDeck(el).filter(c => el === 'dragon' || !c.startingOnly);
     const chosenName = i ? enemyControllerName : controllerName;
     const reserves = controllerCards.filter(c => c.name !== (chosenName || controllerCards[0].name));
     const deathbound = byName[chosenName]?.archetype === 'deathbound';
-    const deck = (deathbound ? deathboundDeck.map(name => byName[name]) : [
+    const deck = (el === 'dragon' ? dragonDeck.map(name => byName[name]) : deathbound ? deathboundDeck.map(name => byName[name]) : [
       ...Array.from({ length: 14 }, (_, n) => creatures[n % creatures.length]),
       ...Array.from({ length: 8 }, (_, n) => spells[n % spells.length]),
       ...Array.from({ length: 4 }, (_, n) => artifacts[n % artifacts.length]),
@@ -450,7 +451,8 @@ export function newMatch(element, enemy, controllerName, enemyControllerName, se
   }
   for (const [i, side] of sides.entries()) {
     const el = i ? enemy : element; const name = i ? enemyControllerName : controllerName;
-    const card = cards.find(c => c.name === name && c.element === el && c.card_type === 'controller') || cards.find(c => c.element === el && c.card_type === 'controller');
+    const available = controllersForDeck(el);
+    const card = available.find(c => c.name === name) || available[0];
     g[side].shards -= card.cost; summonUnit(context(g, side, null, { auto: true, events: 0 }), card, { controller: true });
   }
   recalc(g); return g;

@@ -1,6 +1,7 @@
 // Master Card Database - Single source of truth for all card data
 
 import { deathboundCards } from './deathbound.js';
+import { dragonKing } from './dragonDeck.js';
 export const CARD_DATABASE = {
   // Blood Cards
   'ARFT_BLD_0001': { id: 'ARFT_BLD_0001', name: 'Katana of Fate', element: 'blood', card_type: 'artifact', cost: 2, description: 'Attached card gains +1 AP (+2 if Blood). If on Blood_General or Ren, they gain RenLarKu\'s current AP.', is_persistent: true, keywords: [], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/9d1f94061_Katana_of_Fate.png' },
@@ -209,6 +210,7 @@ export const CARD_DATABASE = {
   'SPEL_WID_0007': { id: 'SPEL_WID_0007', name: 'Smoke Body', element: 'wind', card_type: 'spell', cost: 2, description: 'Target is invulnerable/untargetable. Enables Spirit of the Wind direct attacks.', keywords: [], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/2b9d1365d_Smoke_Body.png' },
   'SPEL_WID_0008': { id: 'SPEL_WID_0008', name: 'Wind Mirage', element: 'wind', card_type: 'spell', cost: 3, description: 'Stops an attack on Controller; summons a defensive Wind Golem (cannot attack).', keywords: ['Reaction'], image_url: 'https://qtrypzzcjebvfcihiynt.supabase.co/storage/v1/object/public/base44-prod/public/695863a33c3ceb7422adcfeb/1d4295042_Wind_Mirage.png' },
   ...deathboundCards,
+  [dragonKing.id]: dragonKing,
 };
 
 // Helper function to get card by ID

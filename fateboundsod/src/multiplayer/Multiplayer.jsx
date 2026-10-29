@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { AuthProvider, useAuth } from '../lib/AuthContext';
-import { cards, elements } from '../practice/catalog';
+import { deckOptions, deckLabel, controllersForDeck } from '../practice/catalog';
 import Practice from '../practice/Practice';
 import '../practice/practice.css';
 import './multiplayer.css';
@@ -98,8 +98,8 @@ function Multiplayer() {
       {room && <p>{connected ? 'Live updates connected' : 'Reconnecting; checking for updates'} · {opponentOnline ? 'Rival online' : 'Rival offline'} · Version {room.version}</p>}
       <p role="status">{notice}</p>
       {pending.current && <button disabled={busy} onClick={() => act(pending.current.action)}>Retry last action</button>}
-      {!room && <><div className="mp-deck"><label>Element<select value={element} onChange={e => { setElement(e.target.value); setController(cards.find(c => c.element === e.target.value && c.card_type === 'controller').name); }}>{elements.map(e => <option key={e}>{e}</option>)}</select></label><label>Controller<select value={controller} onChange={e => setController(e.target.value)}>{cards.filter(c => c.element === element && c.card_type === 'controller').map(c => <option key={c.id}>{c.name}</option>)}</select></label></div>
-      <p>Deathbound deck: choose Blood → Veyra or Shadow → Mordrath. Both command the mixed 30-card Undead deck with one starting Controller.</p>
+      {!room && <><div className="mp-deck"><label>Element<select value={element} onChange={e => { setElement(e.target.value); setController(controllersForDeck(e.target.value)[0].name); }}>{deckOptions.map(e => <option key={e} value={e}>{deckLabel(e)}</option>)}</select></label><label>Controller<select value={controller} onChange={e => setController(e.target.value)}>{controllersForDeck(element).map(c => <option key={c.id}>{c.name}</option>)}</select></label></div>
+      <p>NEW! Dragon mixes seven dragon species with support from all nine elements, led by Golden Dragon King.</p><p>Deathbound deck: choose Blood → Veyra or Shadow → Mordrath. Both command the mixed 30-card Undead deck with one starting Controller.</p>
         <button disabled={busy} onClick={() => run(async () => { const code = crypto.randomUUID().replaceAll('-', ''); const next = await call({ op: 'create', id: crypto.randomUUID(), invite: code, deck: { element, controller } }); setShare(`${location.origin}/multiplayer#invite=${code}`); open(next); })}>Create invite room</button>
         <form onSubmit={e => { e.preventDefault(); void run(async () => { const code = invite.includes('#invite=') ? invite.split('#invite=')[1] : invite.trim(); open(await call({ op: 'join', invite: code, deck: { element, controller } })); }); }}><label>Friend’s invite link or code<input required value={invite} onChange={e => setInvite(e.target.value)} /></label><button disabled={busy}>Join duel</button></form>
         <h2>Your recent rooms</h2>{matches.map(m => <button className="mp-room" key={m.id} disabled={busy} onClick={() => run(async () => open(await call({ op: 'get', id: m.id })))}>{m.host_deck.element} / {m.guest_deck?.element || 'waiting'} · {m.status} · {m.id.slice(0, 8)}</button>)}</>}

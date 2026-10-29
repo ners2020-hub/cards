@@ -1,10 +1,11 @@
 // Canonical multiplayer boundary. This module and the rules are bundled unchanged for Deno.
-import { cards, elements, newMatch, performMove, resolveChoice, outcome, cardCost } from './rulesEngine.js';
+import { newMatch, performMove, resolveChoice, outcome, cardCost } from './rulesEngine.js';
+import { deckOptions, controllersForDeck } from './catalog.js';
 import { BALANCE_VERSION, SUPPORTED_BALANCE_VERSIONS } from './balancePatch.js';
 export { BALANCE_VERSION };
 export const SIDES = ['playerState', 'opponentState'];
 export function validateDeck(value) {
-  if (!value || !elements.includes(value.element) || !cards.some(c => c.card_type === 'controller' && c.element === value.element && c.name === value.controller)) throw new Error('Choose a valid element and controller.');
+  if (!value || !deckOptions.includes(value.element) || !controllersForDeck(value.element).some(c => c.name === value.controller)) throw new Error('Choose a valid element and controller.');
   return { element: value.element, controller: value.controller };
 }
 export function startMatch(first, second, seed) {

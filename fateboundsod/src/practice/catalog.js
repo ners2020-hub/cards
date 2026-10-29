@@ -1,5 +1,6 @@
 import { CARD_DATABASE } from './cardDatabase.js';
 import { balancePatch } from './balancePatch.js';
+import { dragonController } from './dragonDeck.js';
 
 export const cards = Object.entries(CARD_DATABASE).map(([id, card]) => {
   const patch = balancePatch[card.name];
@@ -10,6 +11,9 @@ export const cardElements = card => card.elements && card.element === card.eleme
 export const hasElement = (card, element) => cardElements(card).includes(element);
 export const elementLabel = card => cardElements(card).join('/');
 export const elements = ['fire', 'cryo', 'blood', 'wind', 'earth', 'water', 'shadow', 'light', 'electric'];
+export const deckOptions = [...elements, 'dragon'];
+export const deckLabel = value => value === 'dragon' ? 'Dragon — NEW!' : value;
+export const controllersForDeck = element => cards.filter(c => c.card_type === 'controller' && (element === 'dragon' ? c.name === dragonController : c.element === element && c.archetype !== 'dragon'));
 export const DEFAULT_RULES = [
   'Gain 2 shards in each of your Energy Phases. Unspent shards carry over. After end-of-turn effects, choose cards to discard until your hand contains at most 7 cards.',
   'Attack shield creatures (Guardians) first, then other creatures, then Controllers. Any enemy creature on the field protects its Controllers. Only attacking creatures with Stealth can bypass this order; Stealth does not override other target immunities.',
