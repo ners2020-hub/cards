@@ -1,4 +1,4 @@
-// Original procedural score and effects. No downloaded samples or audio service.
+// User-supplied lobby track with procedural battle effects.
 const KEY = 'fatebound.audio.v1';
 const defaults = { enabled: false, muted: false, music: 35, effects: 65 };
 let settings = { ...defaults };
@@ -7,7 +7,7 @@ try {
   for (const key of ['enabled', 'muted']) if (typeof saved[key] === 'boolean') settings[key] = saved[key];
   for (const key of ['music', 'effects']) if (Number.isFinite(saved[key])) settings[key] = Math.max(0, Math.min(100, saved[key]));
 } catch { /* Storage can be unavailable in private browsing. */ }
-let ctx, master, music, effects, timer, nextBar = 0, bar = 0, battle = false;
+let ctx, master, music, effects, lobbySource, lobbyLoading, battle = false;
 const listeners = new Set(), voices = new Set();
 export const getAudioSettings = () => settings;
 export function subscribeAudio(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -52,23 +52,18 @@ function noise(duration, level, start, frequency = 1200, end = 300) {
   voices.add(source); source.onended = () => { voices.delete(source); source.disconnect(); filter.disconnect(); gain.disconnect(); };
   source.start(start); source.stop(start + duration);
 }
-// Eight slow bars in D minor, with a suspended pad and sparse bell melody.
-const chords = [[146.83,220,293.66],[130.81,196,261.63],[116.54,174.61,233.08],[130.81,196,293.66]];
-const melody = [587.33,440,523.25,392,466.16,349.23,392,440];
-function scheduleMusic() {
-  if (!ctx || ctx.state !== 'running') return;
-  if (nextBar < ctx.currentTime) nextBar = ctx.currentTime + .1;
-  while (nextBar < ctx.currentTime + 1) {
-    const t = nextBar, chord = chords[Math.floor(bar / 2) % chords.length];
-    chord.forEach((f, i) => {
-      tone(f, 5.6, .045, t, music, 'sine', f, 1.3);
-      tone(f * 1.002, 5.4, .018, t, music, 'triangle', f * 1.002, 1.5);
-      if (i === 0) tone(f / 2, 5.7, .05, t, music, 'sine', f / 2, 1);
-    });
-    tone(melody[bar % 8], 2.8, .045, t + 1.2, music);
-    tone(melody[(bar + 3) % 8], 2.4, .022, t + 3.2, music);
-    nextBar += 4.8; bar++;
-  }
+// Decode once and share one looping source across all lobby renders.
+async function startLobbyMusic() {
+  if (lobbySource) return;
+  if (!lobbyLoading) lobbyLoading = (async () => {
+    const response = await fetch('/audio/babad.mp3');
+    if (!response.ok) throw new Error('Lobby music could not load.');
+    const buffer = await ctx.decodeAudioData(await response.arrayBuffer());
+    const source = ctx.createBufferSource();
+    source.buffer = buffer; source.loop = true; source.connect(music);
+    source.start(); lobbySource = source;
+  })().catch(error => { lobbyLoading = null; throw error; });
+  await lobbyLoading;
 }
 export async function unlockAudio() {
   if (!settings.enabled) return false;
@@ -86,18 +81,18 @@ export async function unlockAudio() {
       gains();
     }
     await ctx.resume();
-    if (!timer) { nextBar = ctx.currentTime + .08; scheduleMusic(); timer = setInterval(scheduleMusic, 250); }
+    await startLobbyMusic();
     return ctx.state === 'running';
   } catch { return false; }
 }
 export function stopEffects() {
-  // Cancel queued voices when leaving a match; the lobby score restarts gently.
+  // Cancel battle effects without interrupting the lobby track.
   if (!ctx) return;
   effects.gain.cancelScheduledValues(ctx.currentTime); effects.gain.setValueAtTime(0, ctx.currentTime);
   for (const source of voices) { try { source.stop(); } catch { /* Already ended. */ } }
-  nextBar = ctx.currentTime + .1; gains();
+  gains();
 }
-export function pauseAudio() { if (timer) clearInterval(timer); timer = null; stopEffects(); if (ctx) void ctx.suspend().catch(() => {}); }
+export function pauseAudio() { stopEffects(); if (ctx) void ctx.suspend().catch(() => {}); }
 export function playSound(kind, element = '') {
   if (!ctx || ctx.state !== 'running' || !settings.enabled || settings.muted || !settings.effects || globalThis.document?.hidden) return;
   const t = ctx.currentTime + .005;

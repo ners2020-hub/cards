@@ -19,7 +19,7 @@ export default function AudioControls() {
   return <aside className="audio-controls" aria-label="Game audio">
     {open && <div className="audio-panel" id="audio-panel">
       <div className="audio-title"><strong>Sound & music</strong><button aria-label="Close audio settings" onClick={() => setOpen(false)}>×</button></div>
-      <p>Ambient music in lobbies. Elemental effects in battle.</p>
+      <p>Lobby music: Babad. Elemental effects in battle.</p>
       {!settings.enabled ? <button onClick={enable}>Enable audio</button> : <button onClick={() => { setAudioSettings({ muted: !settings.muted }); void unlockAudio(); }}>{settings.muted ? 'Unmute all audio' : 'Mute all audio'}</button>}
       <label>Music <output>{settings.music}%</output><input aria-label="Music volume" type="range" min="0" max="100" value={settings.music} onChange={e => setAudioSettings({ music: +e.target.value })} /></label>
       <label>Effects <output>{settings.effects}%</output><input aria-label="Effects volume" type="range" min="0" max="100" value={settings.effects} onChange={e => setAudioSettings({ effects: +e.target.value })} /></label>
