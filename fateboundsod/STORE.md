@@ -26,3 +26,11 @@ Apply `supabase/store.sql`, then `supabase/store-catalog.sql`, then apply `supab
 - Google sign-in uses the established multiplayer callback and then returns to the store. It still requires the Google provider to be enabled in Supabase.
 
 Store tables intentionally allow only service-role access (RLS with no client policies). The legacy promo-redemption table is also protected. The security advisor still lists unrelated legacy schema-discovery notices and the disabled legacy redemption function's mutable search path; see https://supabase.com/docs/guides/database/database-linter.
+
+
+## Durable pack opening
+Purchase and tutorial reward transactions secure card quantities and save a receipt atomically. `store_pack_request` exposes all unacknowledged pack receipts as `unopenedPacks`, independent of the recent-history limit. Opening reads the same saved cards; only Finish opening sets `opened_at`. Open later, leaving, sign-out, and failed reads do not acknowledge the pack. Repeated purchases use the same request ID and never charge or draw twice. Finish retries are idempotent. No card is granted by opening or finishing. The Edge Function supplies the verified account ID; the RPC is service-role-only.
+
+Purchase retry IDs persist in account-scoped localStorage (with migration from sessionStorage). Authentication and network failures keep the retry ID. Guests sign in before purchasing; tutorial completion remains local until its one-time reward can be claimed. Only server-committed purchases/rewards appear on other devices.
+
+Existing pack receipts have no historical opening acknowledgment, so they are offered for recovery once, without issuing any extra cards. Applied migration: `durable_unopened_pack_reveals`; source SQL: `supabase/unopened-packs.sql`. Rollback-only integration checks: `supabase/unopened-packs-tests.sql`.

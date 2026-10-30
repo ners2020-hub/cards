@@ -1,7 +1,6 @@
 import { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { tutorialLessons, tutorialScene, tutorialMove, verifyTutorial } from '../practice/tutorialRules';
-import { cards } from '../practice/catalog';
 import Practice from '../practice/Practice';
 import { rewardRequest } from '../store/RewardSummary';
 import { supabase } from '../lib/supabaseClient';
@@ -37,7 +36,8 @@ export default function Tutorial(){
  <p role="status">{notice}</p></section>
  <Practice key={index} remote={{tutorial:true,game,version,element:'fire',enemy:'fire',busy:done,act,onPresented:presented,leave:()=>{window.location.href='/';}}}/></>:
  <section className="lesson-complete"><small>TUTORIAL COMPLETE</small><h1>Ready to claim dominion.</h1><p>You learned the turn phases, shards, creatures, spells, artifacts, abilities, and combat protection.</p><p>Your reward: one free five-card Starter Pack per account. Replaying does not grant extra packs. Your next AI win earns the normal 10-token win reward when signed in.</p>
- {!claim?<button className="primary" disabled={busy} onClick={openPack}>{busy?'Confirming reward…':'Open free Starter Pack'}</button>:<><h2>{claim.alreadyClaimed?'Your tutorial pack was already claimed':'Your Starter Pack is open!'}</h2><p>These cards are saved in your collection. Wallet: {claim.tokens} tokens.</p><div className="lesson-row">{claim.cards.map((id,i)=>{const c=cards.find(c=>c.id===id);return <article className="lesson-card" key={`${id}-${i}`}><img src={c?.image_url} alt=""/><strong>{c?.name||id}</strong></article>;})}</div></>}
- <p role="status">{notice}</p><nav><Link to="/login">Sign in to claim</Link><Link to="/">Play a practice match →</Link><Link to="/store">View collection</Link></nav><button onClick={()=>{setCompleted(null);setClaim(null);setIndex(0);setDone(false);records.current=[];actions.current=[];setNotice('');setGame(tutorialScene(0));setVersion(0);lock.current=false;}}>Replay tutorial</button></section>}
+ {!claim?<button className="primary" disabled={busy} onClick={openPack}>{busy?'Saving reward…':'Save free Starter Pack'}</button>:<><h2>{claim.alreadyClaimed?'Your tutorial reward is saved':'Your Starter Pack is waiting!'}</h2><p>Your pack is saved to your account, even if you leave this screen. Wallet: {claim.tokens} tokens.</p><Link className="primary" to="/store?tab=collection">Go to collection · Open saved packs →</Link></>}
+
+ <p role="status">{notice}</p><nav><Link to="/login">Sign in to claim</Link><Link to="/">Play a practice match →</Link><Link to="/store?tab=collection">View collection & saved packs</Link></nav><button onClick={()=>{setCompleted(null);setClaim(null);setIndex(0);setDone(false);records.current=[];actions.current=[];setNotice('');setGame(tutorialScene(0));setVersion(0);lock.current=false;}}>Replay tutorial</button></section>}
  </main>;
 }
