@@ -1,3 +1,4 @@
+import { verifyTutorial } from '../_shared/rules/tutorialRules.js';
 import { createClient } from 'npm:@supabase/supabase-js@2.94.0';
 import { validateSolo, replaySolo } from '../_shared/rules/soloRewards.js';
 import { BALANCE_VERSION, SUPPORTED_BALANCE_VERSIONS } from '../_shared/rules/balancePatch.js';
@@ -15,6 +16,10 @@ Deno.serve(async req=>{
  try {
   const raw=await req.text(); if(raw.length>200000) return reply({error:'Replay too large.'},413);
   const b=JSON.parse(raw);
+  if(b.op==='tutorial') {
+   verifyTutorial(b.lessons);
+   return reply(check(await db.rpc('tutorial_reward_claim',{p_actor:actor,p_email:data.user.email})));
+  }
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(b.id)) return reply({error:'Invalid match.'},400);
   if(b.op==='match') {
    const reward=check(await db.from('match_rewards').select('result,tokens').eq('user_id',actor).eq('match_id',b.id).maybeSingle());

@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import AudioControls from './audio/AudioControls';
 
 const Practice = lazy(() => import('./practice/Practice.jsx'));
+const Tutorial = lazy(() => import('./tutorial/Tutorial.jsx'));
 const Multiplayer = lazy(() => import('./multiplayer/Multiplayer.jsx'));
 const Store = lazy(() => import('./store/Store.jsx'));
 const Admin = lazy(() => import('./admin/Admin.jsx'));
@@ -17,6 +18,7 @@ export default function App() {
     <AudioControls />
     <Suspense fallback={<div style={{ padding: 40, color: 'white', background: '#10121b' }}>Opening Fatebound…</div>}>
       <Routes>
+        <Route path="/tutorial" element={<Tutorial />} />
         <Route path="/" element={<Practice />} />
         <Route path="/practice" element={<Practice />} />
         <Route path="/multiplayer" element={<Multiplayer />} />
